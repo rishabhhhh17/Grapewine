@@ -1,0 +1,365 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  --bg-darker: #020617;
+  --bg-dark: #0f172a;
+  --bg-gradient: linear-gradient(145deg, var(--bg-darker) 0%, var(--bg-dark) 50%, var(--bg-darker) 100%);
+  
+  --primary: #6366f1;
+  --primary-glow: rgba(99, 102, 241, 0.4);
+  --secondary: #38bdf8;
+  --secondary-glow: rgba(56, 189, 248, 0.4);
+  
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  
+  --glass-bg: rgba(15, 23, 42, 0.6);
+  --glass-bg-hover: rgba(15, 23, 42, 0.8);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-highlight: rgba(255, 255, 255, 0.2);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  font-family: 'Inter', system-ui, sans-serif;
+  color: var(--text-main);
+  background-color: var(--bg-darker);
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+*, *::before, *::after {
+  box-sizing: inherit;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg-gradient);
+  background-attachment: fixed;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Subtle radial glow in the background */
+body::before {
+  content: '';
+  position: fixed;
+  top: -20%;
+  left: 50%;
+  width: 80%;
+  height: 60%;
+  background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+  transform: translateX(-50%);
+  z-index: -1;
+  opacity: 0.5;
+  filter: blur(80px);
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Outfit', sans-serif;
+  margin: 0;
+}
+p {
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 12px;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* Fancy Buttons */
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 12px 24px;
+  box-shadow: 0 8px 25px var(--primary-glow);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  position: relative;
+  overflow: hidden;
+  z-index: 1;
+}
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background: linear-gradient(135deg, var(--secondary), var(--primary));
+  opacity: 0;
+  z-index: -1;
+  transition: opacity 0.3s ease;
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px var(--primary-glow);
+}
+.btn-primary:hover::before {
+  opacity: 1;
+}
+
+.btn-outline {
+  border: 1px solid var(--glass-border);
+  color: var(--text-main);
+  padding: 10px 20px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+}
+.btn-outline:hover {
+  border-color: var(--glass-border-highlight);
+  background: rgba(255,255,255,0.05);
+}
+
+.app-container {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+
+/* Elevated Panel */
+.panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 32px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+
+/* Pill Toggles */
+.toggle-group {
+  display: flex;
+  background: rgba(0,0,0,0.3);
+  padding: 4px;
+  border-radius: 100px;
+  border: 1px solid var(--glass-border);
+}
+.toggle-btn {
+  padding: 8px 24px;
+  border-radius: 100px;
+  color: var(--text-muted);
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+.toggle-btn.active {
+  background: var(--glass-bg-hover);
+  color: var(--text-main);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  border: 1px solid var(--glass-border-highlight);
+}
+.toggle-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+
+/* Modern Datagrid */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 16px;
+}
+th {
+  text-align: left;
+  padding: 16px 24px;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--glass-border);
+}
+td {
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  font-size: 15px;
+  vertical-align: middle;
+  transition: background 0.2s;
+}
+tr {
+  transition: all 0.2s ease;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+tr.selected td {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+/* Stunning Badges */
+.badge {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-block;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.badge.green {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.05));
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+.badge.yellow {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.badge.red {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.05));
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+/* Floating Slide Panel */
+.slide-panel-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(2, 6, 23, 0.4);
+  backdrop-filter: blur(8px);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.4s ease;
+}
+.slide-panel-overlay.open {
+  opacity: 1;
+  visibility: visible;
+}
+.slide-panel {
+  width: 500px;
+  background: rgba(15, 23, 42, 0.85);
+  border-left: 1px solid var(--glass-border);
+  height: 100%;
+  padding: 40px;
+  box-shadow: -20px 0 50px rgba(0,0,0,0.6);
+  transform: translateX(100%);
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+.slide-panel-overlay.open .slide-panel {
+  transform: translateX(0);
+}
+
+/* Pipeline Kanban */
+.pipeline-board {
+  display: flex;
+  gap: 24px;
+  overflow-x: auto;
+  padding-bottom: 24px;
+}
+.pipeline-col {
+  flex: 0 0 320px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 20px;
+  padding: 20px;
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 2px 10px rgba(0,0,0,0.2);
+}
+.card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  padding: 20px;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+  transition: all 0.3s ease;
+}
+.card:hover {
+  border-color: var(--glass-border-highlight);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+}
+
+/* Header Tabs */
+.header-nav {
+  display: flex;
+  gap: 32px;
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: 40px;
+  padding-bottom: 0;
+}
+.header-nav button {
+  font-family: 'Outfit', sans-serif;
+  font-size: 18px;
+  color: var(--text-muted);
+  border-radius: 0;
+  padding: 0 0 16px 0;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+}
+.header-nav button.active {
+  color: var(--text-main);
+  border-bottom: 2px solid var(--primary);
+  text-shadow: 0 0 10px var(--primary-glow);
+}
+
+/* Custom Checkbox */
+.checkbox-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+}
+.checkbox-container input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+.checkmark {
+  height: 22px;
+  width: 22px;
+  background-color: rgba(255,255,255,0.05);
+  border: 1px solid var(--glass-border-highlight);
+  border-radius: 6px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.checkbox-container:hover input ~ .checkmark {
+  background-color: rgba(255,255,255,0.1);
+}
+.checkbox-container input:checked ~ .checkmark {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+.checkmark:after {
+  content: "";
+  display: none;
+  width: 6px;
+  height: 10px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  margin-bottom: 2px;
+}
+.checkbox-container input:checked ~ .checkmark:after {
+  display: block;
+}
+
+/* Text Input / Label Enhancements */
+.input-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+  display: block;
+  font-family: 'Outfit', sans-serif;
+}
