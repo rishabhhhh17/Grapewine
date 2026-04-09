@@ -1,185 +1,290 @@
-import React, { useState } from 'react';
+/* eslint-disable react/prop-types */
+import { useMemo, useState } from 'react';
 import SearchPanel from './SearchPanel';
 import EmailPreviewPanel from './EmailPreviewPanel';
 
-const Dashboard = ({ leads, onSearch, loading, onEmailSent }) => {
-  const [selectedLeads, setSelectedLeads] = useState(new Set());
-  const [previewLead, setPreviewLead] = useState(null);
-  const [allowedSources, setAllowedSources] = useState(null);
+const SOURCE_COLORS = {
+  Naukri: { bg: 'rgba(96,165,250,0.08)', color: '#93c5fd' },
+  Wellfound: { bg: 'rgba(251,146,60,0.08)', color: '#fdba74' },
+  Cutshort: { bg: 'rgba(192,132,252,0.08)', color: '#d8b4fe' },
+  Instahyre: { bg: 'rgba(74,222,128,0.08)', color: '#86efac' },
+  'IIM Jobs': { bg: 'rgba(248,113,113,0.08)', color: '#fca5a5' },
+  'Times Jobs': { bg: 'rgba(250,204,21,0.08)', color: '#fde68a' },
+};
 
-  // If a lead has any overlapping source with the allowedSources set, we show it
-  // If allowedSources is null, it means no filter has initialized yet (so show all)
-  const foundLeads = leads.filter(l => {
-    if (l.status !== 'Found' && l.status) return false;
-    if (allowedSources !== null && l.sources) {
-      if (!l.sources.some(s => allowedSources.has(s))) return false;
-    }
-    return true;
-  });
+const stageOf = (lead) => lead.pipeline_stage || lead.status || 'Found';
+const scoreRing = (score) => (score >= 8 ? 'sg' : score >= 5 ? 'sw' : 'sr');
+const defaultSubject = 'We have [Role] candidates ready for [Company]';
+const defaultBody = 'Hi [FirstName], noticed [Company] is actively building its [Function] team in [City]. At Grape, we have 300 pre-vetted candidates ready to interview. Our AI Tal has already done deep assessments on each of them so you skip straight to the final conversation. Worth a quick look?';
 
-  const toggleLead = (id, lead) => {
-    const newKeys = new Set(selectedLeads);
-    if (newKeys.has(id)) {
-      newKeys.delete(id);
-      if (previewLead?.id === id) setPreviewLead(null);
+const blurb = (lead) => {
+  const days = lead.days_posted || 0;
+  const sources = (lead.source_platforms || []).slice(0, 2).join(' and ') || 'multiple sources';
+  const urgency = days <= 1
+    ? 'Urgent hire.'
+    : days <= 3
+      ? 'High urgency hire.'
+      : days <= 7
+        ? 'Actively hiring.'
+        : 'Ongoing search.';
+  return `Posted ${lead.function} role ${days} days ago on ${sources}. ${urgency}`;
+};
+
+const Dashboard = ({
+  leads,
+  loading,
+  searchMessage,
+  leadCountLabel,
+  currentFilters,
+  onSearchDatabase,
+  onSearchInternet,
+  onManualPull,
+  onFilterChange,
+  onSendEmail,
+  onBulkEmail,
+  onBlacklist,
+}) => {
+  const [selected, setSelected] = useState(new Set());
+  const [preview, setPreview] = useState(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkSubject, setBulkSubject] = useState(defaultSubject);
+  const [bulkBody, setBulkBody] = useState(defaultBody);
+  const [bulkProgress, setBulkProgress] = useState(0);
+  const [bulkSending, setBulkSending] = useState(false);
+
+  const visibleLeads = useMemo(() => {
+    const search = String(currentFilters.search || '').trim().toLowerCase();
+    return leads
+      .filter((lead) => !lead.is_blacklisted)
+      .filter((lead) => {
+        if (!search) return true;
+        return ['name', 'company', 'title', 'city', 'function']
+          .some((field) => String(lead[field] || '').toLowerCase().includes(search));
+      });
+  }, [leads, currentFilters.search]);
+
+  const foundLeads = visibleLeads.filter((lead) => stageOf(lead) === 'Found');
+  const sentCount = visibleLeads.filter((lead) => stageOf(lead) === 'Email Sent').length;
+  const avgScore = foundLeads.length
+    ? Math.round(foundLeads.reduce((sum, lead) => sum + Number(lead.activity_score || 0), 0) / foundLeads.length)
+    : 0;
+
+  const selectedLeads = visibleLeads.filter((lead) => selected.has(lead.id));
+
+  const toggle = (lead) => {
+    const next = new Set(selected);
+    if (next.has(lead.id)) {
+      next.delete(lead.id);
+      if (preview?.id === lead.id) setPreview(null);
     } else {
-      newKeys.add(id);
-      setPreviewLead(lead);
+      next.add(lead.id);
+      setPreview(lead);
     }
-    setSelectedLeads(newKeys);
+    setSelected(next);
   };
 
-  const autoSelect100 = () => {
-    const newKeys = new Set();
-    foundLeads.slice(0, 100).forEach(l => newKeys.add(l.id));
-    setSelectedLeads(newKeys);
-    if (foundLeads.length > 0) setPreviewLead(foundLeads[0]);
-  };
-
-  const getScoreBadge = (score) => {
-    if (score >= 8) return <span className="badge green">{score}/10 Activity</span>;
-    if (score >= 5) return <span className="badge yellow">{score}/10 Activity</span>;
-    return <span className="badge red">{score}/10 Activity</span>;
-  };
-
-  const getSourceColor = (source) => {
-    const colors = {
-      'Naukri': '#3b82f6',
-      'Wellfound': '#f97316',
-      'Cutshort': '#a855f7',
-      'Instahyre': '#22c55e',
-      'IIM Jobs': '#ef4444',
-      'Times Jobs': '#eab308'
-    };
-    return colors[source] || '#ffffff';
+  const sendBulk = async () => {
+    if (!selectedLeads.length) return;
+    setBulkSending(true);
+    setBulkProgress(10);
+    const ids = selectedLeads.map((lead) => lead.id);
+    await onBulkEmail({ leadIds: ids, subject: bulkSubject, body: bulkBody });
+    setBulkProgress(100);
+    setTimeout(() => {
+      setBulkSending(false);
+      setBulkOpen(false);
+      setSelected(new Set());
+      setBulkProgress(0);
+    }, 900);
   };
 
   return (
-    <div style={{ position: 'relative' }}>
-      <SearchPanel 
-        onSearch={onSearch} 
-        loading={loading} 
-        onSourceFilterChange={(set) => setAllowedSources(set)} 
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">Grape Hiring Manager Engine</h1>
+        <p className="page-subtitle">Database-first prospecting for Tal. Scrape only when you explicitly choose Search Internet or Manual Pull.</p>
+        <hr className="header-line" />
+      </div>
+
+      <div className="stats-row">
+        <div className="stat-card sv">
+          <div className="stat-label">Total Leads</div>
+          <div className="stat-num">{visibleLeads.length}</div>
+          <div className="stat-hint">saved in Supabase</div>
+        </div>
+        <div className="stat-card sc">
+          <div className="stat-label">Selected</div>
+          <div className="stat-num">{selected.size}</div>
+          <div className="stat-hint">ready for outreach</div>
+        </div>
+        <div className="stat-card sw">
+          <div className="stat-label">Average Score</div>
+          <div className="stat-num">{avgScore || '—'}</div>
+          <div className="stat-hint">activity / 10</div>
+        </div>
+        <div className="stat-card se">
+          <div className="stat-label">Emails Sent</div>
+          <div className="stat-num">{sentCount}</div>
+          <div className="stat-hint">from pipeline</div>
+        </div>
+      </div>
+
+      <SearchPanel
+        loading={loading}
+        leadCountLabel={leadCountLabel}
+        onSearchDatabase={onSearchDatabase}
+        onSearchInternet={onSearchInternet}
+        onManualPull={onManualPull}
+        onFilterChange={onFilterChange}
       />
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '24px' }}>
-        <div style={{ display: 'flex', gap: '32px' }}>
-          <div>
-            <span className="input-label">Total Leads</span>
-            <span style={{ fontWeight: '700', fontSize: '32px', fontFamily: 'Outfit, sans-serif' }}>{foundLeads.length}</span>
-          </div>
-          <div>
-            <span className="input-label">Selected</span>
-            <span style={{ fontWeight: '700', fontSize: '32px', fontFamily: 'Outfit, sans-serif', color: 'var(--secondary)' }}>{selectedLeads.size}</span>
+      {searchMessage && <div className="info-banner">{searchMessage}</div>}
+
+      {loading ? (
+        <div className="leads-grid">
+          {Array.from({ length: 9 }).map((_, idx) => (
+            <div key={idx} className="lc skel">
+              <div className="lc-band" />
+              <div className="lc-body"><div className="sk" style={{ height: 130 }} /></div>
+            </div>
+          ))}
+        </div>
+      ) : visibleLeads.length === 0 ? (
+        <div className="empty">
+          <div className="empty-orb">⬇</div>
+          <div className="empty-h">No leads yet</div>
+          <div className="empty-s">Pull from the internet to start building your hiring manager database.</div>
+          <button className="btn-primary" onClick={() => onSearchInternet(currentFilters)}>Search Internet</button>
+        </div>
+      ) : (
+        <div className="leads-grid">
+          {visibleLeads.map((lead, index) => {
+            const isSelected = selected.has(lead.id);
+            return (
+              <div
+                key={lead.id}
+                className={`lc ${isSelected ? 'sel' : ''}`}
+                style={{ animationDelay: `${Math.min(index * 50, 700)}ms` }}
+                onClick={() => toggle(lead)}
+              >
+                <div className="lc-band" />
+                <div className="lc-body">
+                  <div className="lc-top">
+                    <div className={`lc-chk ${isSelected ? 'on' : ''}`} />
+                    <div className="src-badges">
+                      {(lead.source_platforms || []).map((source) => {
+                        const color = SOURCE_COLORS[source] || { bg: 'rgba(255,255,255,0.1)', color: '#d4d4d4' };
+                        return (
+                          <span key={source} className="src-b" style={{ background: color.bg, color: color.color }}>
+                            {source}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <div
+                      className={`score-ring ${scoreRing(lead.activity_score)}`}
+                      title="Scored by recency, source count, and seniority."
+                    >
+                      {lead.activity_score}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="lc-name">{lead.name}</div>
+                    <div className="lc-role">{lead.title}</div>
+                  </div>
+
+                    <div className="lc-meta">
+                      <div className="lc-row co">{lead.company}</div>
+                      <div className="lc-row">{lead.city}</div>
+                    </div>
+                  <div className="lc-blurb">{blurb(lead)}</div>
+                </div>
+                <div className="lc-foot" onClick={(event) => event.stopPropagation()}>
+                  <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">View LinkedIn</a>
+                  <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={() => toggle(lead)}>
+                    {isSelected ? 'Selected ✓' : 'Select'}
+                  </button>
+                  <button className="btn-ghost small" onClick={() => onBlacklist(lead.id)}>Blacklist</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {selected.size > 0 && (
+        <div className="floating-bar">
+          <span>{selected.size} selected</span>
+          <button className="btn-primary" onClick={() => setBulkOpen(true)}>Bulk Send Email</button>
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              const header = ['name', 'company', 'email', 'city', 'function', 'score'];
+              const rows = selectedLeads.map((lead) => [lead.name, lead.company, lead.email, lead.city, lead.function, lead.activity_score]);
+              const csv = [header, ...rows]
+                .map((row) => row.map((item) => `"${String(item || '').replaceAll('"', '""')}"`).join(','))
+                .join('\n');
+              const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = 'grape-leads.csv';
+              link.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Export CSV
+          </button>
+          <button className="btn-secondary" onClick={() => setSelected(new Set())}>Clear Selection</button>
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="modal-overlay" onClick={() => !bulkSending && setBulkOpen(false)}>
+          <div className="bulk-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Send email to {selectedLeads.length} hiring managers</h2>
+            <div className="bulk-grid">
+              <div className="bulk-list">
+                {selectedLeads.map((lead) => (
+                  <div key={lead.id} className="bulk-row">
+                    <span>{lead.name}</span>
+                    <small>{lead.company}</small>
+                    <small>{lead.email}</small>
+                  </div>
+                ))}
+              </div>
+              <div className="bulk-editor">
+                <label>Subject</label>
+                <input value={bulkSubject} onChange={(event) => setBulkSubject(event.target.value)} />
+                <label>Body</label>
+                <textarea rows={8} value={bulkBody} onChange={(event) => setBulkBody(event.target.value)} />
+                <p>Send schedule: 10 emails per hour</p>
+              </div>
+            </div>
+            {bulkSending && (
+              <div className="progress-wrap">
+                <div className="progress-bar" style={{ width: `${bulkProgress}%` }} />
+              </div>
+            )}
+            <div className="bulk-actions">
+              <button className="btn-secondary" onClick={() => setBulkOpen(false)} disabled={bulkSending}>Cancel</button>
+              <button className="btn-send" onClick={sendBulk} disabled={bulkSending}>Send All</button>
+            </div>
           </div>
         </div>
-        
-        <button className="btn-outline" onClick={autoSelect100} style={{ borderRadius: '12px' }}>
-          Auto Select Top 100
-        </button>
-      </div>
+      )}
 
-      <div className="panel" style={{ padding: '0 0 16px 0', overflow: 'hidden' }}>
-        <table>
-          <thead style={{ background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(10px)' }}>
-            <tr>
-              <th style={{ width: '60px', paddingLeft: '32px' }}></th>
-              <th>Name</th>
-              <th>Title</th>
-              <th>Company</th>
-              <th>Sources</th>
-              <th style={{ textAlign: 'center' }}>Days Posted</th>
-              <th>Activity Score</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {foundLeads.map((lead) => (
-              <tr key={lead.id} className={selectedLeads.has(lead.id) ? 'selected' : ''}>
-                <td style={{ paddingLeft: '32px' }}>
-                  <label className="checkbox-container">
-                    <input 
-                      type="checkbox" 
-                      checked={selectedLeads.has(lead.id)}
-                      onChange={() => toggleLead(lead.id, lead)}
-                    />
-                    <span className="checkmark"></span>
-                  </label>
-                </td>
-                <td style={{ fontWeight: '600', color: 'white' }}>{lead.name}</td>
-                <td style={{ color: 'var(--text-muted)' }}>{lead.title}</td>
-                <td style={{ fontWeight: '600', color: 'var(--secondary)' }}>{lead.company}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                    {lead.sources && lead.sources.map(s => (
-                      <span key={s} style={{ 
-                        fontSize: '11px', 
-                        padding: '2px 8px', 
-                        borderRadius: '12px', 
-                        border: `1px solid ${getSourceColor(s)}`, 
-                        color: getSourceColor(s),
-                        background: `${getSourceColor(s)}15`
-                      }}>
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td style={{ textAlign: 'center', fontWeight: '500', fontFamily: 'Outfit' }}>{lead.days_posted}</td>
-                <td>{getScoreBadge(lead.activity_score)}</td>
-                <td>
-                  <a 
-                    href={lead.linkedin_url} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    style={{ 
-                      color: 'var(--text-main)', 
-                      textDecoration: 'none', 
-                      background: 'rgba(255,255,255,0.05)', 
-                      border: '1px solid var(--glass-border)',
-                      padding: '8px 16px', 
-                      borderRadius: '8px', 
-                      fontSize: '13px', 
-                      fontWeight: 600,
-                      display: 'inline-block',
-                      transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.target.style.background = 'rgba(255,255,255,0.1)';
-                      e.target.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.target.style.background = 'rgba(255,255,255,0.05)';
-                      e.target.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    View LinkedIn ↗
-                  </a>
-                </td>
-              </tr>
-            ))}
-            {foundLeads.length === 0 && !loading && (
-              <tr>
-                <td colSpan="8" style={{ textAlign: 'center', padding: '60px 40px', color: 'var(--text-muted)' }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.2 }}>🔍</div>
-                  <div style={{ fontSize: '18px', fontWeight: 500, fontFamily: 'Outfit' }}>No leads found</div>
-                  <div style={{ marginTop: '8px' }}>Adjust your filters and hit 'Launch Real-time Search'.</div>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <EmailPreviewPanel 
-        lead={previewLead} 
-        onClose={() => setPreviewLead(null)} 
-        onEmailSent={(id) => {
-          onEmailSent(id);
-          const newKeys = new Set(selectedLeads);
-          newKeys.delete(id);
-          setSelectedLeads(newKeys);
-          setPreviewLead(null);
+      <EmailPreviewPanel
+        lead={preview}
+        onClose={() => setPreview(null)}
+        onEmailSent={async (id) => {
+          await onSendEmail(id);
+          setSelected((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         }}
       />
     </div>

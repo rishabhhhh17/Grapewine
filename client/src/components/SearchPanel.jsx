@@ -1,184 +1,190 @@
-import React, { useState } from 'react';
+/* eslint-disable react/prop-types */
+import { useMemo, useState } from 'react';
 
-const ALL_SOURCES = ['Naukri', 'Wellfound', 'Cutshort', 'Instahyre', 'IIM Jobs', 'Times Jobs'];
+const ALL = ['Naukri', 'Wellfound', 'Cutshort', 'Instahyre', 'IIM Jobs', 'Times Jobs'];
+const FUNCTIONS = ['Engineering', 'Product', 'Marketing'];
+const CITIES = ['Mumbai', 'Delhi', 'Bangalore'];
 
-const SOURCE_COLORS = {
-  'Naukri':    '#3b82f6',
-  'Wellfound': '#f97316',
-  'Cutshort':  '#a855f7',
-  'Instahyre': '#22c55e',
-  'IIM Jobs':  '#ef4444',
-  'Times Jobs':'#eab308',
-};
-
-const SearchPanel = ({ onSearch, loading, onSourceFilterChange }) => {
-  const [jobFunction, setJobFunction] = useState('Engineering');
+const SearchPanel = ({
+  loading,
+  leadCountLabel,
+  onSearchDatabase,
+  onSearchInternet,
+  onManualPull,
+  onFilterChange,
+}) => {
+  const [role, setRole] = useState('Engineering');
   const [city, setCity] = useState('Bangalore');
   const [strictHiringManager, setStrictHiringManager] = useState(false);
-  const [activeFilters, setActiveFilters] = useState(new Set(ALL_SOURCES));
+  const [search, setSearch] = useState('');
+  const [sources, setSources] = useState(new Set(ALL));
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualLogs, setManualLogs] = useState([]);
+  const [manualRunning, setManualRunning] = useState(false);
 
-  const functions = ['Engineering', 'Product', 'Marketing'];
-  const cities = ['Mumbai', 'Delhi', 'Bangalore'];
+  const selectedSources = useMemo(() => [...sources], [sources]);
+
+  const filters = useMemo(
+    () => ({ role, city, strictHiringManager, search, sources: selectedSources }),
+    [role, city, strictHiringManager, search, selectedSources]
+  );
+
+  const syncFilters = (nextFilters = filters) => {
+    onFilterChange?.(nextFilters);
+    return nextFilters;
+  };
 
   const toggleSource = (source) => {
-    setActiveFilters(prev => {
-      const next = new Set(prev);
-      if (next.has(source)) {
-        next.delete(source);
-      } else {
-        next.add(source);
-      }
-      // Empty or full selection = no filter
-      if (next.size === 0 || next.size === ALL_SOURCES.length) {
-        const full = new Set(ALL_SOURCES);
-        onSourceFilterChange(null);
-        return full;
-      }
-      onSourceFilterChange(next);
-      return next;
-    });
+    const next = new Set(sources);
+    if (next.has(source)) next.delete(source); else next.add(source);
+    const finalSet = next.size ? next : new Set(ALL);
+    setSources(finalSet);
+    syncFilters({ ...filters, sources: [...finalSet] });
   };
 
-  const resetFilters = () => {
-    setActiveFilters(new Set(ALL_SOURCES));
-    onSourceFilterChange(null);
+  const runManualPull = async () => {
+    setManualRunning(true);
+    setManualLogs([]);
+    try {
+      await onManualPull({
+        filters,
+        onLog: (line) => setManualLogs((prev) => [...prev, line]),
+      });
+      setTimeout(() => setManualOpen(false), 5000);
+    } finally {
+      setManualRunning(false);
+    }
   };
-
-  const allActive = activeFilters.size === ALL_SOURCES.length;
 
   return (
-    <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '28px', marginBottom: '32px' }}>
-      {/* Row 1: Function / City / Strict / Search button */}
-      <div style={{ display: 'flex', gap: '40px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <span className="input-label">Function</span>
-          <div className="toggle-group">
-            {functions.map(f => (
-              <button
-                key={f}
-                className={`toggle-btn ${jobFunction === f ? 'active' : ''}`}
-                onClick={() => setJobFunction(f)}
-              >
-                {f}
-              </button>
-            ))}
+    <>
+      <div className="search-panel">
+        <div className="search-row">
+          <div className="field-grp search-grow">
+            <div className="field-lbl">Search your {leadCountLabel}</div>
+            <input
+              className="search-input"
+              value={search}
+              onChange={(event) => {
+                const next = event.target.value;
+                setSearch(next);
+                syncFilters({ ...filters, search: next });
+              }}
+              placeholder="Search name, company, title, city, function"
+            />
           </div>
-        </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <span className="input-label">City</span>
-          <div className="toggle-group">
-            {cities.map(c => (
-              <button
-                key={c}
-                className={`toggle-btn ${city === c ? 'active' : ''}`}
-                onClick={() => setCity(c)}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="field-grp">
+            <div className="field-lbl">Function</div>
+            <div className="pill-row">
+              {FUNCTIONS.map((item) => (
+                <button
+                  key={item}
+                  className={`pill ${role === item ? 'pv' : ''}`}
+                  onClick={() => {
+                    setRole(item);
+                    syncFilters({ ...filters, role: item });
+                  }}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <span className="input-label">Strict Filter</span>
-          <div
-            className={`toggle-group ${strictHiringManager ? 'active-strict' : ''}`}
-            onClick={() => setStrictHiringManager(!strictHiringManager)}
-            style={{
-              cursor: 'pointer',
-              padding: '12px 24px',
-              background: strictHiringManager ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.03)',
-              border: strictHiringManager ? '1px solid var(--primary)' : '1px solid transparent',
-              transition: 'all 0.3s'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{
-                width: '20px', height: '20px', borderRadius: '50%',
-                background: strictHiringManager ? 'var(--primary)' : 'rgba(255,255,255,0.1)',
-                flexShrink: 0, transition: 'all 0.3s',
-                boxShadow: strictHiringManager ? '0 0 10px var(--primary)' : 'none'
-              }}></div>
-              <span style={{ fontWeight: 600, color: strictHiringManager ? 'white' : 'var(--text-muted)' }}>
-                Managers Only
-              </span>
+          <div className="field-grp">
+            <div className="field-lbl">City</div>
+            <div className="pill-row">
+              {CITIES.map((item) => (
+                <button
+                  key={item}
+                  className={`pill ${city === item ? 'pc' : ''}`}
+                  onClick={() => {
+                    setCity(item);
+                    syncFilters({ ...filters, city: item });
+                  }}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="field-grp">
+            <div className="field-lbl">Filter</div>
+            <div
+              className="tog-wrap"
+              onClick={() => {
+                const next = !strictHiringManager;
+                setStrictHiringManager(next);
+                syncFilters({ ...filters, strictHiringManager: next });
+              }}
+            >
+              <div className={`tog-track ${strictHiringManager ? 'on' : ''}`}>
+                <div className="tog-thumb" />
+              </div>
+              <span className="tog-lbl">Managers Only</span>
             </div>
           </div>
         </div>
 
-        <div style={{ flex: 1 }}></div>
-
-        <button
-          className="btn-primary"
-          style={{ padding: '16px 40px', fontSize: '16px', borderRadius: '16px', height: '52px' }}
-          onClick={() => onSearch(jobFunction, city, strictHiringManager)}
-          disabled={loading}
-        >
-          {loading ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <span style={{
-                display: 'inline-block', width: '16px', height: '16px',
-                border: '2px solid rgba(255,255,255,0.3)', borderTopColor: 'white',
-                borderRadius: '50%', animation: 'spin 1s linear infinite'
-              }}></span>
-              Searching...
-            </span>
-          ) : 'Launch Deep Scrape'}
-        </button>
-      </div>
-
-      {/* Row 2: Platform source filter */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-        <span className="input-label" style={{ margin: 0, whiteSpace: 'nowrap' }}>Filter by Source</span>
-
-        <button
-          onClick={resetFilters}
-          style={{
-            padding: '6px 16px',
-            borderRadius: '100px',
-            fontSize: '12px',
-            fontWeight: 600,
-            border: `1px solid ${allActive ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'}`,
-            color: allActive ? 'var(--text-main)' : 'var(--text-muted)',
-            background: allActive ? 'rgba(255,255,255,0.08)' : 'transparent',
-            transition: 'all 0.2s',
-          }}
-        >
-          All
-        </button>
-
-        {ALL_SOURCES.map(source => {
-          const color = SOURCE_COLORS[source];
-          const isActive = activeFilters.has(source);
-          return (
+        <div className="sources-row">
+          <span className="field-lbl" style={{ margin: 0 }}>Sources</span>
+          <button className="src-chip" onClick={() => setSources(new Set(ALL))}>All</button>
+          {ALL.map((source) => (
             <button
               key={source}
+              className={`src-chip ${sources.has(source) ? 'on' : ''}`}
               onClick={() => toggleSource(source)}
-              style={{
-                padding: '6px 16px',
-                borderRadius: '100px',
-                fontSize: '12px',
-                fontWeight: 600,
-                border: `1px solid ${isActive ? color : 'rgba(255,255,255,0.08)'}`,
-                color: isActive ? color : 'var(--text-muted)',
-                background: isActive ? `${color}18` : 'transparent',
-                transition: 'all 0.2s',
-                cursor: 'pointer',
-              }}
             >
               {source}
             </button>
-          );
-        })}
+          ))}
+        </div>
+
+        <div className="search-actions">
+          <button className="btn-primary" onClick={() => onSearchDatabase(syncFilters())} disabled={loading}>
+            Search Database
+          </button>
+          <button className="btn-secondary" onClick={() => onSearchInternet(syncFilters())} disabled={loading}>
+            🌐 Search Internet
+          </button>
+          <button className="btn-secondary" onClick={() => setManualOpen(true)} disabled={loading}>
+            ⬇ Manual Pull
+          </button>
+        </div>
       </div>
 
-      <style jsx="true">{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
-    </div>
+      {manualOpen && (
+        <div className="drawer-overlay" onClick={() => !manualRunning && setManualOpen(false)}>
+          <div className="manual-drawer" onClick={(event) => event.stopPropagation()}>
+            <h3>Manual Pull</h3>
+            <p>Select sources and pull now for current filters.</p>
+            <div className="source-checks">
+              {ALL.map((source) => (
+                <label key={source}>
+                  <input
+                    type="checkbox"
+                    checked={sources.has(source)}
+                    onChange={() => toggleSource(source)}
+                  />
+                  <span>{source}</span>
+                </label>
+              ))}
+            </div>
+            <button className="btn-primary full" onClick={runManualPull} disabled={manualRunning}>
+              {manualRunning ? 'Pulling…' : 'Pull Now'}
+            </button>
+            <div className="manual-log">
+              {manualLogs.length === 0
+                ? <p>Live logs will appear here...</p>
+                : manualLogs.map((line, idx) => <p key={`${line}-${idx}`}>{line}</p>)
+              }
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

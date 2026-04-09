@@ -75,7 +75,14 @@ APIFY_API_KEY=your_key
 SUPABASE_URL=your_url
 SUPABASE_KEY=your_key
 RESEND_API_KEY=your_key
-PORT=5000
+PORT=3000
+```
+
+Create `client/.env.local`:
+```
+VITE_API_BASE=http://localhost:3000
+VITE_SUPABASE_URL=your_url
+VITE_SUPABASE_ANON_KEY=your_anon_or_publishable_key
 ```
 
 **4. Run**
@@ -87,7 +94,7 @@ cd server && node index.js
 cd client && npm run dev
 ```
 
-The app runs at `http://localhost:5173` with the API at `http://localhost:5000`.
+The app runs at `http://localhost:5173` with the API at `http://localhost:3000`.
 
 ## Activity Score Algorithm
 
