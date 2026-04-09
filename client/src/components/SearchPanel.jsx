@@ -130,7 +130,16 @@ const SearchPanel = ({
 
         <div className="sources-row">
           <span className="field-lbl" style={{ margin: 0 }}>Sources</span>
-          <button className="src-chip" onClick={() => setSources(new Set(ALL))}>All</button>
+          <button
+            className="src-chip"
+            onClick={() => {
+              const allSources = new Set(ALL);
+              setSources(allSources);
+              syncFilters({ ...filters, sources: [...allSources] });
+            }}
+          >
+            All
+          </button>
           {ALL.map((source) => (
             <button
               key={source}

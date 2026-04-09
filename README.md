@@ -74,6 +74,7 @@ FIRECRAWL_API_KEY=your_key
 APIFY_API_KEY=your_key
 SUPABASE_URL=your_url
 SUPABASE_KEY=your_key
+GROQ_API_KEY=your_key
 RESEND_API_KEY=your_key
 PORT=3000
 ```

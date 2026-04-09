@@ -133,6 +133,8 @@ function App() {
           role: filters.role,
           city: filters.city,
           strictHiringManager: filters.strictHiringManager,
+          sources: filters.sources,
+          search: filters.search,
           forceInternet,
         }),
       });
@@ -248,7 +250,12 @@ function App() {
     setToast(enabled ? 'Auto pull enabled' : 'Auto pull disabled');
   };
 
-  const leadCountLabel = useMemo(() => `${leads.length}+ saved leads`, [leads.length]);
+  const leadCountLabel = useMemo(() => {
+    const total = Number.isFinite(Number(stats?.totalLeads))
+      ? Number(stats.totalLeads)
+      : leads.length;
+    return `${total}+ saved leads`;
+  }, [leads.length, stats?.totalLeads]);
 
   return (
     <div className="app-layout">
