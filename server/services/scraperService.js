@@ -33,6 +33,11 @@ const PLATFORMS = [
   },
 ];
 
+const PLATFORM_BY_NAME = PLATFORMS.reduce((acc, platform) => {
+  acc[platform.name] = platform;
+  return acc;
+}, {});
+
 const EXTRACT_PROMPT = `Extract a list of active job postings from this page. For each posting return a JSON object with these exact fields:
 - company: the exact company name as displayed
 - title: the full job title
@@ -92,35 +97,80 @@ const scrapeOnePlatform = async (platform, role, city, apiKey) => {
   }
 };
 
-const scrapeAllPlatforms = async (role, city, strictHiringManager) => {
+const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {}) => {
+  const selectedSources = Array.isArray(options.sources) && options.sources.length
+    ? options.sources
+    : PLATFORMS.map((p) => p.name);
+  const selectedPlatforms = selectedSources
+    .map((name) => PLATFORM_BY_NAME[name])
+    .filter(Boolean);
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+
   const apiKey = process.env.FIRECRAWL_API_KEY;
   if (!apiKey) {
     console.log('No FIRECRAWL_API_KEY found. Returning mock data.');
-    return fallbackMockData(role, strictHiringManager);
+    const mockData = fallbackMockData(role, strictHiringManager)
+      .filter((job) => selectedSources.includes(job.source));
+    if (onProgress) {
+      onProgress({
+        stage: 'mock',
+        message: `External scraper unavailable. Returning ${mockData.length} mock results from selected sources.`,
+      });
+    }
+    return mockData;
   }
 
-  console.log(`Scraping ${PLATFORMS.length} platforms in parallel for "${role}" in "${city}"...`);
+  console.log(`Scraping ${selectedPlatforms.length} platforms in parallel for "${role}" in "${city}"...`);
+  if (onProgress) {
+    onProgress({
+      stage: 'start',
+      message: `Starting scrape for ${selectedPlatforms.length} sources`,
+      sources: selectedSources,
+    });
+  }
 
   // Fire all 6 platform scrapes simultaneously
   const settled = await Promise.allSettled(
-    PLATFORMS.map(p => scrapeOnePlatform(p, role, city, apiKey))
+    selectedPlatforms.map(async (platform) => {
+      if (onProgress) {
+        onProgress({ stage: 'source_started', source: platform.name, message: `Scraping ${platform.name}...` });
+      }
+      const result = await scrapeOnePlatform(platform, role, city, apiKey);
+      if (onProgress) {
+        onProgress({
+          stage: 'source_completed',
+          source: platform.name,
+          results: Array.isArray(result) ? result.length : 0,
+          message: `Scraping ${platform.name} complete (${Array.isArray(result) ? result.length : 0} results)`,
+        });
+      }
+      return result;
+    })
   );
 
   const allJobs = [];
   settled.forEach((result, i) => {
     if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-      console.log(`  ${PLATFORMS[i].name}: ${result.value.length} jobs`);
+      console.log(`  ${selectedPlatforms[i].name}: ${result.value.length} jobs`);
       allJobs.push(...result.value);
     } else {
-      console.log(`  ${PLATFORMS[i].name}: no results`);
+      console.log(`  ${selectedPlatforms[i].name}: no results`);
     }
   });
 
   if (allJobs.length === 0) {
     console.log('All platforms returned no results. Falling back to mock data.');
-    return fallbackMockData(role, strictHiringManager);
+    const fallback = fallbackMockData(role, strictHiringManager)
+      .filter((job) => selectedSources.includes(job.source));
+    if (onProgress) {
+      onProgress({ stage: 'fallback', message: `Falling back to mock results (${fallback.length})` });
+    }
+    return fallback;
   }
 
+  if (onProgress) {
+    onProgress({ stage: 'completed', message: `Scrape complete with ${allJobs.length} jobs` });
+  }
   return allJobs;
 };
 
@@ -228,4 +278,147 @@ const fallbackMockData = (role, strictHiringManager) => {
   return rawScrapeSimulated;
 };
 
-module.exports = { scrapeAllPlatforms };
+// ─── Mock lead generator for testing ─────────────────────────────────────────
+// Produces complete, upsert-ready lead objects with no API calls.
+// Each call shuffles a large pool so new name+company pairs are added to DB.
+
+const MOCK_COMPANIES = [
+  'Flipkart','Swiggy','Zomato','Razorpay','CRED','Meesho','Zepto','Zerodha',
+  'Dream11','Upstox','ShareChat','Freshworks','Zoho','Chargebee','Hasura',
+  'Unacademy','Spinny','Cars24','Lenskart','Nykaa','PharmEasy','Groww',
+  'BharatPe','Digit Insurance','Acko','PolicyBazaar','Delhivery','Dunzo',
+  'Zetwerk','Moglix','Livspace','Urban Company','NoBroker','KhataBook',
+  'Jupiter','Fi Money','MobiKwik','GupShup','Amagi','HighRadius','Icertis',
+  'Druva','Zenoti','CleverTap','MoEngage','WebEngage','Yellow.ai','Haptik',
+  'Postman','BrowserStack','Paytm','Ola','OYO','Udaan','Blinkit','Shadowfax',
+  'Rivigo','BlackBuck','ElasticRun','DealShare','OfBusiness','Infra.Market',
+  'Turtlemint','ClearTax','OkCredit','Open Financial','Niyo','Instamojo',
+  'GreyOrange','Unbxd','Capillary','Sokrati','Mad Street Den','Innovaccer',
+  'Darwinbox','LatentView','Tredence','Mu Sigma','Fractal','Pine Labs',
+  'Eruditus','Upgrad','Vedantu','PurpleTalk','Ninjacart','Ninjavan',
+  'WayCool','DeHaat','AgroStar','Bijak','Arya.ag','Cropin','Fasal',
+  'Stellapps','Intello Labs','CropIn','Pixxel','Skyroot','Agnikul',
+  'Bellatrix','GalaxEye','Dhruva Space','SatSure','Detect Technologies',
+  'Auzmor','Advantage Club','HROne','Zimyo','Keka','sumHR','Darwinbox',
+  'greytHR','HRMantra','Beehive','Kredily','PeopleStrong','ZingHR',
+  'Qandle','factoHR','Empxtrack','Akrivia','Pocket HRMS','HRTailor',
+  'Synergita','AssessHub','Mercer|Mettl','iMocha','HackerEarth','HackerRank',
+  'Codility','TestGorilla','Vervoe','Xobin','Evalground','InterviewBit',
+  'Scaler','Newton School','Masai School','Crio.Do','Coding Ninjas',
+  'GUVI','Internshala','Unstop','Dare2Compete','Learnbay','Simplilearn',
+  'upGrad Enterprise','Great Learning','Emeritus','Coursera India',
+  'Udemy India','Skillsoft','Pluralsight India','LinkedIn Learning India',
+];
+
+const MOCK_MANAGERS = [
+  { name:'Arjun Mehta',       title:'VP Engineering' },
+  { name:'Priya Sharma',      title:'Head of Engineering' },
+  { name:'Rahul Joshi',       title:'Director of Engineering' },
+  { name:'Sneha Patel',       title:'Engineering Manager' },
+  { name:'Vikram Nair',       title:'CTO' },
+  { name:'Ananya Krishnan',   title:'Head of Product' },
+  { name:'Rohan Gupta',       title:'VP of Product' },
+  { name:'Deepika Agarwal',   title:'Director of Product' },
+  { name:'Karan Malhotra',    title:'Co-Founder & CTO' },
+  { name:'Neha Reddy',        title:'VP Engineering' },
+  { name:'Siddharth Rao',     title:'Head of Technology' },
+  { name:'Pooja Iyer',        title:'Engineering Director' },
+  { name:'Aditya Bansal',     title:'Staff Engineering Manager' },
+  { name:'Kavitha Suresh',    title:'Head of Engineering' },
+  { name:'Nikhil Verma',      title:'VP of Engineering' },
+  { name:'Shruti Desai',      title:'Director of Technology' },
+  { name:'Amit Saxena',       title:'Principal Engineering Manager' },
+  { name:'Ritu Bhatia',       title:'Head of Product & Engineering' },
+  { name:'Gaurav Mishra',     title:'Engineering Lead' },
+  { name:'Divya Menon',       title:'VP Product' },
+  { name:'Kunal Kapoor',      title:'Director of Engineering' },
+  { name:'Meera Pillai',      title:'Co-Founder & VP Engineering' },
+  { name:'Varun Choudhary',   title:'Head of Backend Engineering' },
+  { name:'Tanya Singh',       title:'Engineering Manager' },
+  { name:'Rajat Khanna',      title:'VP of Technology' },
+  { name:'Ishita Ghosh',      title:'Director of Product Management' },
+  { name:'Sandeep Kumar',     title:'Head of Platform Engineering' },
+  { name:'Nandita Rao',       title:'VP Engineering' },
+  { name:'Prateek Jain',      title:'Senior Director of Engineering' },
+  { name:'Lakshmi Venkatesh', title:'CTO & Co-Founder' },
+  { name:'Abhishek Tiwari',   title:'Director of Engineering' },
+  { name:'Sunita Murthy',     title:'Head of Talent & Engineering' },
+  { name:'Mohit Aggarwal',    title:'VP of Product Engineering' },
+  { name:'Shalini Bajaj',     title:'Senior Engineering Manager' },
+  { name:'Vivek Pandey',      title:'Head of Infrastructure' },
+  { name:'Ankita Doshi',      title:'Director of Product' },
+  { name:'Suresh Natarajan',  title:'VP Engineering' },
+  { name:'Aarti Chandra',     title:'Engineering Manager' },
+  { name:'Tarun Bose',        title:'Head of Mobile Engineering' },
+  { name:'Preeti Mathur',     title:'Director of Engineering' },
+  { name:'Kartik Jain',       title:'Head of Growth' },
+  { name:'Ravi Krishnan',     title:'Head of Marketing' },
+  { name:'Swati Deshpande',   title:'VP Marketing' },
+  { name:'Manoj Bhatt',       title:'Director of Marketing' },
+  { name:'Richa Gupta',       title:'Head of Performance Marketing' },
+  { name:'Sameer Bose',       title:'CMO' },
+  { name:'Taruna Ahuja',      title:'VP Growth' },
+  { name:'Neel Shah',         title:'Director of Product Growth' },
+];
+
+const SOURCES_POOL = ['Naukri','Wellfound','Cutshort','Instahyre','IIM Jobs','Times Jobs'];
+const CITIES_POOL  = ['Bangalore','Mumbai','Delhi','Pune','Hyderabad','Chennai'];
+const FN_TITLES = {
+  Engineering: ['VP Engineering','Head of Engineering','Director of Engineering','Engineering Manager','CTO','Staff Engineering Manager'],
+  Product:     ['VP of Product','Head of Product','Director of Product','Product Manager','CPO'],
+  Marketing:   ['VP Marketing','Head of Marketing','Director of Marketing','CMO','Head of Growth'],
+};
+
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+const generateMockLeads = (role = 'Engineering', city = 'Bangalore', count = 30) => {
+  const resolvedRole = (role && role !== 'all') ? role : 'Engineering';
+  const resolvedCity = (city && city !== 'all') ? city : null; // null = vary per lead
+  const titles = FN_TITLES[resolvedRole] || FN_TITLES.Engineering;
+
+  // Unique batch tag so every run produces NEW name::company keys in Supabase
+  // Uses last 5 digits of timestamp — changes every ms, guarantees uniqueness
+  const batchTag = String(Date.now()).slice(-5);
+
+  const companies = shuffle(MOCK_COMPANIES);
+  const managers  = shuffle(MOCK_MANAGERS);
+
+  const leads = [];
+  for (let i = 0; i < Math.min(count, companies.length); i++) {
+    const manager   = managers[i % managers.length];
+    const company   = `${companies[i]} [${batchTag}]`; // unique per run
+    const numSources = 1 + Math.floor(Math.random() * 3);
+    const sources   = shuffle(SOURCES_POOL).slice(0, numSources);
+    const daysPosted = Math.floor(Math.random() * 30) + 1;
+    const activityScore = daysPosted <= 7  ? Math.floor(Math.random() * 3) + 7
+                        : daysPosted <= 20 ? Math.floor(Math.random() * 3) + 4
+                        :                   Math.floor(Math.random() * 3) + 1;
+    const leadCity = resolvedCity || CITIES_POOL[i % CITIES_POOL.length];
+
+    leads.push({
+      name:             manager.name,
+      title:            titles[i % titles.length],
+      company,
+      city:             leadCity,
+      function:         resolvedRole,
+      email:            `${manager.name.split(' ')[0].toLowerCase()}@${company.replace(/[\s\[\]]/g,'').toLowerCase()}.com`,
+      linkedin_url:     `https://www.linkedin.com/in/${manager.name.toLowerCase().replace(/\s+/g,'-')}`,
+      days_posted:      daysPosted,
+      activity_score:   activityScore,
+      source_platforms: sources,
+      pipeline_stage:   'Found',
+      status:           'Found',
+      is_blacklisted:   false,
+    });
+  }
+  return leads;
+};
+
+module.exports = { scrapeAllPlatforms, generateMockLeads };

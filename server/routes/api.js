@@ -1,11 +1,17 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
-const { scrapeAllPlatforms } = require('../services/scraperService');
+const { scrapeAllPlatforms, generateMockLeads } = require('../services/scraperService');
 const { findHiringManagersBulk } = require('../services/linkedinService');
 const { calculateActivityScore } = require('../services/scoringService');
 const { sendOutreachEmail } = require('../services/emailService');
 const { parseSearchIntent } = require('../services/intentService');
 const { supabase, isMock } = require('../services/supabaseService');
+const {
+  DEFAULT_AUTO_PULL_SCHEDULE,
+  normalizeAutoPullSchedule,
+  setAutoPullSchedule,
+  getAutoPullScheduleState,
+} = require('../services/autoPullScheduler');
 
 const router = express.Router();
 
@@ -20,7 +26,13 @@ let mockScrapeLogs = [];
 let mockEmailLogs = [];
 let mockPipelineEvents = [];
 let mockSearchHistory = [];
-let mockSettings = { auto_pull_enabled: false, last_auto_pull: null, updated_at: new Date().toISOString() };
+let mockSettings = {
+  auto_pull_enabled: false,
+  auto_pull_schedule: DEFAULT_AUTO_PULL_SCHEDULE,
+  last_auto_pull: null,
+  updated_at: new Date().toISOString(),
+};
+const leadColumnCache = new Map();
 
 const manualPullClients = new Map();
 const emailQueue = [];
@@ -41,17 +53,42 @@ const MOCK_LEAD_SEED = [
 const ensureMockSeedData = () => {
   if (!isMock || mockLeads.length > 0) return;
   const seededAt = nowIso();
-  mockLeads = MOCK_LEAD_SEED.map((lead, index) => ({
-    ...lead,
-    id: `mock-${index + 1}`,
-    email: `contact@${lead.company.replace(/\s+/g, '').toLowerCase()}.com`,
-    linkedin_url: null,
-    pipeline_stage: 'Found',
-    status: 'Found',
-    is_blacklisted: false,
-    created_at: seededAt,
-    updated_at: seededAt,
-  }));
+  const cities = ['Bangalore', 'Mumbai', 'Delhi', 'Gurugram', 'Pune'];
+  const functions = ['Engineering', 'Product', 'Marketing'];
+  const companies = ['Nexa Systems', 'Orbit Labs', 'KiteStack', 'BlueHive', 'QuantFox', 'NovaPeak'];
+  const titlesByFunction = {
+    Engineering: ['Engineering Manager', 'Director of Engineering', 'CTO'],
+    Product: ['Head of Product', 'Product Director', 'VP Product'],
+    Marketing: ['Marketing Director', 'Head of Growth', 'CMO'],
+  };
+  const seeded = [];
+  for (let i = 0; i < 2200; i += 1) {
+    const base = MOCK_LEAD_SEED[i % MOCK_LEAD_SEED.length];
+    const fn = functions[i % functions.length];
+    const company = `${companies[i % companies.length]} ${Math.floor(i / companies.length) + 1}`;
+    const city = cities[i % cities.length];
+    const title = titlesByFunction[fn][i % titlesByFunction[fn].length];
+    const name = `${base.name.split(' ')[0]} ${String.fromCharCode(65 + (i % 26))}${Math.floor(i / 26)}`;
+    seeded.push({
+      ...base,
+      id: `mock-${i + 1}`,
+      name,
+      title,
+      company,
+      city,
+      function: fn,
+      days_posted: (i % 14) + 1,
+      activity_score: Math.max(1, 10 - (i % 9)),
+      email: `contact${i + 1}@${company.replace(/\s+/g, '').toLowerCase()}.com`,
+      linkedin_url: null,
+      pipeline_stage: 'Found',
+      status: 'Found',
+      is_blacklisted: false,
+      created_at: seededAt,
+      updated_at: seededAt,
+    });
+  }
+  mockLeads = seeded;
   mockSearchHistory.unshift({
     id: `seed-${Date.now()}`,
     role: 'Engineering',
@@ -60,6 +97,25 @@ const ensureMockSeedData = () => {
     result_count: mockLeads.length,
     created_at: seededAt,
   });
+};
+
+const normalizeCity = (city) => {
+  const cityMap = {
+    bangalore: 'Bangalore', bengaluru: 'Bangalore', bengalore: 'Bangalore',
+    mumbai: 'Mumbai', bombay: 'Mumbai',
+    delhi: 'Delhi', 'new delhi': 'Delhi', ncr: 'Delhi',
+    gurgaon: 'Delhi', noida: 'Delhi', gurugram: 'Delhi',
+  };
+  return cityMap[String(city).toLowerCase()] || city;
+};
+
+const normalizeFunction = (func) => {
+  const funcMap = {
+    engineering: 'Engineering', engineer: 'Engineering', tech: 'Engineering', technology: 'Engineering',
+    product: 'Product', 'product management': 'Product', pm: 'Product',
+    marketing: 'Marketing', growth: 'Marketing', sales: 'Marketing',
+  };
+  return funcMap[String(func).toLowerCase()] || func;
 };
 
 const normalizeSourcePlatforms = (sources) => {
@@ -80,15 +136,15 @@ const normalizeLead = (lead) => ({
   is_blacklisted: Boolean(lead.is_blacklisted),
 });
 
-const createSearchSummaryMessage = (source, added, updated, total, { autoFallback = false, scopeTotal = total } = {}) => {
-  if (source === 'internet') {
-    if (autoFallback) {
-      return `No exact matches found in database. Searched internet and saved ${added} new leads (${updated} already existed). ${scopeTotal} lead(s) now available for this role/city.`;
-    }
+const createSearchSummaryMessage = (source, added, updated, total) => {
+  if (source === 'internet, now saved to database') {
     if (added === 0 && updated > 0) {
-      return `Internet pull complete. 0 new leads added. ${updated} were already in database and refreshed. ${total} total returned.`;
+      return `Fresh from internet. 0 new leads saved. ${updated} already existed and were updated.`;
     }
-    return `Internet pull complete. ${added} new leads added, ${updated} updated, ${total} total returned.`;
+    return `Fresh from internet. ${added} new leads saved to your database. ${updated} already existed and were updated.`;
+  }
+  if (total === 0) {
+    return 'No leads found in your database for this search. Use Search Internet to find new leads.';
   }
   return `Database search complete. ${total} lead(s) returned from Supabase.`;
 };
@@ -111,11 +167,6 @@ const buildPersonalizedBody = (template, lead) => {
   );
 };
 
-const shouldSimulateEmailSuccess = (error) => {
-  const message = typeof error === 'string' ? error : (error?.message || JSON.stringify(error || ''));
-  return /domain is not verified|invalid api key|unauthorized|forbidden/i.test(String(message));
-};
-
 const baseSubject = 'We have [Role] candidates ready for [Company]';
 const baseBody = 'Hi [FirstName], noticed [Company] is actively building its [Function] team in [City]. At Grape, we have 300 pre-vetted candidates ready to interview. Our AI Tal has already done deep assessments on each of them so you skip straight to the final conversation. Worth a quick look?';
 
@@ -134,8 +185,8 @@ const applyFiltersInMemory = (leads, query = {}) => {
   return leads
     .map(normalizeLead)
     .filter((lead) => !lead.is_blacklisted)
-    .filter((lead) => (role ? String(lead.function || '').toLowerCase() === String(role).toLowerCase() : true))
-    .filter((lead) => (city ? String(lead.city || '').toLowerCase() === String(city).toLowerCase() : true))
+    .filter((lead) => (role && role !== 'all' ? String(lead.function || '').toLowerCase().includes(normalizeFunction(role).toLowerCase()) : true))
+    .filter((lead) => (city && city !== 'all' ? String(lead.city || '').toLowerCase().includes(normalizeCity(city).toLowerCase()) : true))
     .filter((lead) => (source ? normalizeSourcePlatforms(lead.source_platforms).includes(source) : true))
     .filter((lead) => (stage ? stageOf(lead) === stage : true))
     .filter((lead) => (minScore !== null ? Number(lead.activity_score || 0) >= minScore : true))
@@ -157,6 +208,70 @@ const safeLog = async (table, payload) => {
   const { error } = await supabase.from(table).insert(payload);
   if (error) {
     console.error(`Failed to write ${table}:`, error.message);
+  }
+};
+
+const supportsLeadColumn = async (column) => {
+  if (isMock) return true;
+  if (leadColumnCache.has(column)) return leadColumnCache.get(column);
+  const probe = await supabase.from('leads').select(column).limit(1);
+  const supported = !probe.error || !new RegExp(`column .*${column}`, 'i').test(String(probe.error.message || ''));
+  leadColumnCache.set(column, supported);
+  return supported;
+};
+
+const fetchSettings = async () => {
+  if (isMock) return { ...mockSettings };
+  const query = await supabase
+    .from('settings')
+    .select('*')
+    .eq('id', 1)
+    .limit(1)
+    .maybeSingle();
+  if (query.error) return {};
+  return query.data || {};
+};
+
+const persistSettings = async (partial) => {
+  if (isMock) {
+    mockSettings = { ...mockSettings, ...partial, updated_at: nowIso() };
+    return { ...mockSettings };
+  }
+
+  const payloadWithId = { id: 1, ...partial, updated_at: nowIso() };
+  const payloadNoUpdatedAt = { id: 1, ...partial };
+  const payloadNoId = { ...partial, updated_at: nowIso() };
+  const payloadMinimal = { ...partial };
+  const attempts = [payloadWithId, payloadNoUpdatedAt, payloadNoId, payloadMinimal];
+  let result = null;
+  for (const payload of attempts) {
+    result = await supabase.from('settings').upsert(payload, { onConflict: 'id' }).select('*').limit(1);
+    if (!result.error) break;
+  }
+  if (result?.error) {
+    return {};
+  }
+  return result.data?.[0] || partial;
+};
+
+const cleanupFakeSentEmailLogs = async () => {
+  if (isMock) {
+    mockEmailLogs = mockEmailLogs.filter((row) => row.status !== 'sent');
+    return;
+  }
+
+  if (!process.env.RESEND_API_KEY) {
+    await supabase.from('email_logs').delete().eq('status', 'sent');
+    return;
+  }
+
+  let cleanup = await supabase
+    .from('email_logs')
+    .delete()
+    .eq('status', 'sent')
+    .not('error_message', 'is', null);
+  if (cleanup.error && /column .*error_message/i.test(String(cleanup.error.message || ''))) {
+    cleanup = { error: null };
   }
 };
 
@@ -197,7 +312,8 @@ const updateLeadStage = async (leadId, stage) => {
   }
 
   const removableColumns = ['pipeline_stage', 'updated_at'];
-  let payload = { pipeline_stage: stage, status: stage, updated_at: nowIso() };
+  const hasUpdatedAt = await supportsLeadColumn('updated_at');
+  let payload = { pipeline_stage: stage, status: stage, ...(hasUpdatedAt ? { updated_at: nowIso() } : {}) };
   let update = await supabase.from('leads').update(payload).eq('id', leadId).select('*').limit(1);
   while (update.error) {
     const message = String(update.error.message || '');
@@ -230,11 +346,20 @@ const fetchFilteredLeads = async (query = {}) => {
   const managerTitles = Array.isArray(query.managerTitles)
     ? query.managerTitles.map((title) => String(title).toLowerCase().trim()).filter(Boolean)
     : [];
-  const buildDbQuery = (excludeBlacklisted = true) => {
+  const buildDbQuery = (excludeBlacklisted = true, stageMode = 'both') => {
     let dbQuery = supabase.from('leads').select('*', { count: 'exact' });
-    if (role) dbQuery = dbQuery.eq('function', role);
-    if (query.city) dbQuery = dbQuery.eq('city', query.city);
-    if (query.stage) dbQuery = dbQuery.or(`pipeline_stage.eq.${query.stage},status.eq.${query.stage}`);
+    if (role && role !== 'all') dbQuery = dbQuery.ilike('function', `%${normalizeFunction(role)}%`);
+    if (query.city && query.city !== 'all') dbQuery = dbQuery.ilike('city', `%${normalizeCity(query.city)}%`);
+    if (query.stage) {
+      const escapedStage = String(query.stage).replaceAll('"', '\\"');
+      if (stageMode === 'status') {
+        dbQuery = dbQuery.eq('status', query.stage);
+      } else if (stageMode === 'pipeline') {
+        dbQuery = dbQuery.eq('pipeline_stage', query.stage);
+      } else {
+        dbQuery = dbQuery.or(`pipeline_stage.eq."${escapedStage}",status.eq."${escapedStage}"`);
+      }
+    }
     if (query.minScore !== undefined) dbQuery = dbQuery.gte('activity_score', Number(query.minScore));
     if (query.maxScore !== undefined) dbQuery = dbQuery.lte('activity_score', Number(query.maxScore));
     if (query.source) dbQuery = dbQuery.contains('source_platforms', [query.source]);
@@ -243,7 +368,35 @@ const fetchFilteredLeads = async (query = {}) => {
       dbQuery = dbQuery.or(SEARCHABLE_FIELDS.map((f) => `${f}.ilike.%${term}%`).join(','));
     }
     if (excludeBlacklisted) dbQuery = dbQuery.or('is_blacklisted.is.null,is_blacklisted.eq.false');
-    return dbQuery.order('activity_score', { ascending: false });
+    return dbQuery
+      .order('activity_score', { ascending: false })
+      .order('id', { ascending: false });
+  };
+
+  const executeRange = async (rangeStart, rangeEnd) => {
+    const stageModes = query.stage ? ['both', 'status', 'pipeline'] : ['both'];
+    let lastError = null;
+
+    for (const excludeBlacklisted of [true, false]) {
+      for (const stageMode of stageModes) {
+        const response = await buildDbQuery(excludeBlacklisted, stageMode).range(rangeStart, rangeEnd);
+        if (!response.error) return response;
+        const message = String(response.error.message || '');
+        lastError = response.error;
+
+        const isBlacklistedMissing = /column .*is_blacklisted/i.test(message);
+        const pipelineMissing = /column .*pipeline_stage/i.test(message);
+        const statusMissing = /column .*status/i.test(message);
+
+        if (excludeBlacklisted && isBlacklistedMissing) break;
+        if (stageMode === 'both' && (pipelineMissing || statusMissing)) continue;
+        if (stageMode === 'status' && statusMissing) continue;
+        if (stageMode === 'pipeline' && pipelineMissing) continue;
+        return response;
+      }
+    }
+
+    return { data: null, count: 0, error: lastError || new Error('Lead query failed') };
   };
 
   const page = Math.max(1, Number(query.page || 1));
@@ -251,13 +404,19 @@ const fetchFilteredLeads = async (query = {}) => {
   const start = (page - 1) * limit;
   const end = start + limit - 1;
   if (managerTitles.length) {
-    let { data, error } = await buildDbQuery(true).range(0, 999);
-    if (error && /column .*is_blacklisted/i.test(error.message || '')) {
-      ({ data, error } = await buildDbQuery(false).range(0, 999));
+    const chunkSize = 1000;
+    const allRows = [];
+    let chunkStart = 0;
+    while (true) {
+      const chunk = await executeRange(chunkStart, chunkStart + chunkSize - 1);
+      if (chunk.error) throw new Error(chunk.error.message);
+      const rows = chunk.data || [];
+      allRows.push(...rows);
+      if (rows.length < chunkSize) break;
+      chunkStart += chunkSize;
     }
-    if (error) throw new Error(error.message);
 
-    const filtered = (data || [])
+    const filtered = allRows
       .map(normalizeLead)
       .filter((lead) => managerTitles.some((title) => String(lead.title || '').toLowerCase().includes(title)));
 
@@ -269,14 +428,27 @@ const fetchFilteredLeads = async (query = {}) => {
     };
   }
 
-  let { data, count, error } = await buildDbQuery(true).range(start, end);
-  if (error && /column .*is_blacklisted/i.test(error.message || '')) {
-    ({ data, count, error } = await buildDbQuery(false).range(start, end));
+  const rows = [];
+  let totalCount = 0;
+  let currentStart = start;
+  let remaining = limit;
+  const chunkSize = 1000;
+
+  while (remaining > 0) {
+    const chunkLimit = Math.min(chunkSize, remaining);
+    const chunk = await executeRange(currentStart, currentStart + chunkLimit - 1);
+    if (chunk.error) throw new Error(chunk.error.message);
+    if (totalCount === 0 && Number.isFinite(Number(chunk.count))) totalCount = Number(chunk.count);
+    const batch = chunk.data || [];
+    rows.push(...batch);
+    if (batch.length < chunkLimit) break;
+    currentStart += chunkLimit;
+    remaining -= chunkLimit;
   }
-  if (error) throw new Error(error.message);
+
   return {
-    leads: (data || []).map(normalizeLead),
-    total: count || 0,
+    leads: rows.map(normalizeLead),
+    total: totalCount,
     page,
     limit,
   };
@@ -323,6 +495,7 @@ const upsertLeads = async (preparedLeads, context) => {
   }
   const existingKeys = new Set(existingPairs.map(getLeadKey));
 
+  const hasUpdatedAt = await supportsLeadColumn('updated_at');
   const payload = leads.map((lead) => ({
     name: lead.name,
     company: lead.company,
@@ -337,7 +510,7 @@ const upsertLeads = async (preparedLeads, context) => {
     pipeline_stage: lead.pipeline_stage || 'Found',
     status: lead.pipeline_stage || 'Found',
     is_blacklisted: Boolean(lead.is_blacklisted),
-    updated_at: nowIso(),
+    ...(hasUpdatedAt ? { updated_at: nowIso() } : {}),
   }));
 
   const removableColumns = ['pipeline_stage', 'source_platforms', 'is_blacklisted', 'updated_at'];
@@ -355,7 +528,50 @@ const upsertLeads = async (preparedLeads, context) => {
     upsert = await supabase.from('leads').upsert(activePayload, { onConflict: 'name,company' });
   }
   if (upsert.error && /no unique or exclusion constraint matching/i.test(String(upsert.error.message || ''))) {
-    upsert = await supabase.from('leads').insert(activePayload);
+    upsert = { error: null };
+    for (const row of activePayload) {
+      const key = getLeadKey(row);
+      let updatePayload = {
+        activity_score: row.activity_score,
+        days_posted: row.days_posted,
+        source_platforms: row.source_platforms,
+        linkedin_url: row.linkedin_url,
+        title: row.title,
+        ...(hasUpdatedAt ? { updated_at: nowIso() } : {}),
+      };
+      if (existingKeys.has(key)) {
+        let updateResult = await supabase
+          .from('leads')
+          .update(updatePayload)
+          .eq('name', row.name)
+          .eq('company', row.company);
+        if (updateResult.error && /column .*updated_at/i.test(String(updateResult.error.message || ''))) {
+          const { updated_at: omitted, ...nextPayload } = updatePayload;
+          updatePayload = nextPayload;
+          updateResult = await supabase
+            .from('leads')
+            .update(updatePayload)
+            .eq('name', row.name)
+            .eq('company', row.company);
+        }
+        if (updateResult.error) {
+          upsert = updateResult;
+          break;
+        }
+      } else {
+        let insertPayload = { ...row };
+        let insertResult = await supabase.from('leads').insert(insertPayload);
+        if (insertResult.error && /column .*updated_at/i.test(String(insertResult.error.message || ''))) {
+          const { updated_at: omitted, ...nextPayload } = insertPayload;
+          insertPayload = nextPayload;
+          insertResult = await supabase.from('leads').insert(insertPayload);
+        }
+        if (insertResult.error) {
+          upsert = insertResult;
+          break;
+        }
+      }
+    }
   }
   if (upsert.error) throw new Error(upsert.error.message);
 
@@ -475,10 +691,34 @@ const runInternetPipeline = async ({
   onProgress,
 }) => {
   const startedAt = nowIso();
-  let rawJobs = [];
   let status = 'success';
   let errorMessage = null;
 
+  // No Firecrawl key → fast mock path: skip scrape + Apify entirely
+  if (!process.env.FIRECRAWL_API_KEY) {
+    try {
+      if (onProgress) onProgress({ stage: 'mock', message: 'Mock mode — generating test leads...' });
+      const prepared = generateMockLeads(role, city, 30);
+      console.log(`[mock pipeline] Generated ${prepared.length} leads. Saving to Supabase...`);
+      if (onProgress) onProgress({ stage: 'saving', message: `Saving ${prepared.length} leads to database...` });
+      const { added, updated } = await upsertLeads(prepared, {
+        triggeredBy,
+        sourcesScraped: sources,
+        leadsFound: prepared.length,
+        startedAt,
+        status: 'success',
+        errorMessage: null,
+      });
+      console.log(`[mock pipeline] Done. added=${added} updated=${updated}`);
+      if (onProgress) onProgress({ stage: 'done', message: `Done — ${added} new leads added, ${updated} updated.` });
+      return { added, updated, scrapedCount: prepared.length };
+    } catch (err) {
+      console.error('[mock pipeline] upsert failed:', err.message);
+      return { added: 0, updated: 0, scrapedCount: 0, errorMessage: err.message };
+    }
+  }
+
+  let rawJobs = [];
   try {
     rawJobs = await scrapeAllPlatforms(role, city, strictHiringManager, { sources, onProgress });
     const prepared = await buildLeadsFromJobs({ rawJobs, role, city, strictHiringManager, onProgress });
@@ -526,8 +766,7 @@ const processQueuedEmail = async (item) => {
     { subject, body }
   );
 
-  const simulatedSuccess = !result.success && shouldSimulateEmailSuccess(result.error);
-  const emailSucceeded = result.success || simulatedSuccess;
+  const emailSucceeded = result.success;
   const status = emailSucceeded ? 'sent' : 'failed';
   if (isMock) {
     mockEmailLogs.push({
@@ -557,7 +796,6 @@ const processQueuedEmail = async (item) => {
   return {
     success: emailSucceeded,
     error: emailSucceeded ? null : (result.error || null),
-    simulated: simulatedSuccess,
   };
 };
 
@@ -595,16 +833,15 @@ router.get('/manual-pull/stream', (req, res) => {
 });
 
 router.post('/search', async (req, res) => {
-  const role = req.body.role || req.body.function;
-  const city = req.body.city;
+  const rawRole = req.body.role || req.body.function;
+  const rawCity = req.body.city;
+  // Treat 'all' or empty as "no filter"
+  const role = (rawRole && rawRole !== 'all') ? rawRole : undefined;
+  const city = (rawCity && rawCity !== 'all') ? rawCity : undefined;
   const forceInternet = Boolean(req.body.forceInternet);
   const strictHiringManager = Boolean(req.body.strictHiringManager);
   const sources = Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : DEFAULT_SOURCES;
   const naturalSearch = String(req.body.search || '').trim();
-
-  if (!role || !city) {
-    return res.status(400).json({ success: false, message: 'role and city are required' });
-  }
 
   try {
     let effectiveRole = role;
@@ -624,13 +861,12 @@ router.post('/search', async (req, res) => {
     }
 
     let source = 'database';
-    let autoFallback = false;
     let scrapeAdded = 0;
     let scrapeUpdated = 0;
     let scrapeError = null;
 
     if (forceInternet) {
-      source = 'internet';
+      source = 'internet, now saved to database';
       const result = await runInternetPipeline({
         role: effectiveRole,
         city: effectiveCity,
@@ -650,25 +886,9 @@ router.post('/search', async (req, res) => {
       search: mergedSearch,
       managerTitles,
       page: 1,
-      limit: 500,
+      limit: 5000,
     });
     let queryResult = await buildQuery();
-
-    if (!forceInternet && Number(queryResult.total || 0) === 0) {
-      autoFallback = true;
-      source = 'internet';
-      const result = await runInternetPipeline({
-        role: effectiveRole,
-        city: effectiveCity,
-        strictHiringManager,
-        sources,
-        triggeredBy: 'search_auto_fallback',
-      });
-      scrapeAdded = result.added;
-      scrapeUpdated = result.updated;
-      scrapeError = result.errorMessage || null;
-      queryResult = await buildQuery();
-    }
 
     const scopeResult = await fetchFilteredLeads({
       role: effectiveRole,
@@ -678,10 +898,7 @@ router.post('/search', async (req, res) => {
     });
     const message = scrapeError
       ? `External APIs unavailable. Showing your saved database. (${scrapeError})`
-      : createSearchSummaryMessage(source, scrapeAdded, scrapeUpdated, queryResult.total, {
-          autoFallback,
-          scopeTotal: scopeResult.total,
-        });
+      : createSearchSummaryMessage(source, scrapeAdded, scrapeUpdated, queryResult.total);
 
     if (isMock) {
       mockSearchHistory.unshift({
@@ -739,7 +956,7 @@ router.post('/manual-pull', async (req, res) => {
     onProgress: (evt) => push(evt),
   });
 
-  const queryResult = await fetchFilteredLeads({ role, city, page: 1, limit: 500 });
+  const queryResult = await fetchFilteredLeads({ role, city, page: 1, limit: 5000 });
   const summary = {
     success: true,
     sessionId,
@@ -748,6 +965,7 @@ router.post('/manual-pull', async (req, res) => {
     updated: result.updated,
     source: 'internet',
     totalInDatabase: queryResult.total,
+    data: queryResult.leads,
     message: result.errorMessage
       ? `Manual pull completed with partial results (${result.errorMessage})`
       : `${result.added} new leads added, ${result.updated} updated`,
@@ -844,9 +1062,10 @@ router.put('/blacklist', async (req, res) => {
           : lead
       ));
     } else {
+      const hasUpdatedAt = await supportsLeadColumn('updated_at');
       const attempts = [
-        { is_blacklisted: true, updated_at: nowIso() },
-        { status: 'Blacklisted', updated_at: nowIso() },
+        { is_blacklisted: true, ...(hasUpdatedAt ? { updated_at: nowIso() } : {}) },
+        { status: 'Blacklisted', ...(hasUpdatedAt ? { updated_at: nowIso() } : {}) },
         { status: 'Blacklisted' },
       ];
       let update = null;
@@ -882,24 +1101,59 @@ router.get('/leads', async (req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     ensureMockSeedData();
-    const source = isMock ? applyFiltersInMemory(mockLeads) : (await fetchFilteredLeads({ page: 1, limit: 100000 })).leads;
+    await cleanupFakeSentEmailLogs();
+    const source = isMock ? applyFiltersInMemory(mockLeads) : [];
     const stageCount = (stage) => source.filter((lead) => stageOf(lead) === stage).length;
     const lastScrape = isMock
       ? mockScrapeLogs[0]?.completed_at || null
       : (await supabase.from('scrape_logs').select('completed_at,status').order('completed_at', { ascending: false }).limit(1)).data?.[0] || null;
+    const settings = await fetchSettings();
+    const runtimeSchedule = getAutoPullScheduleState().schedule;
+    const schedule = normalizeAutoPullSchedule(
+      settings?.auto_pull_schedule || runtimeSchedule || DEFAULT_AUTO_PULL_SCHEDULE
+    );
+    setAutoPullSchedule(schedule);
+
+    let totalLeads = source.length;
+    let selected = isMock ? stageCount('Selected') : 0;
+    let replied = isMock ? stageCount('Replied') : 0;
+    let onboarded = isMock ? stageCount('Onboarded to Tal') : 0;
+    let emailed = isMock ? 0 : stageCount('Email Sent');
+    if (!isMock) {
+      totalLeads = (await fetchFilteredLeads({ page: 1, limit: 1 })).total;
+      selected = (await fetchFilteredLeads({ page: 1, limit: 1, stage: 'Selected' })).total;
+      replied = (await fetchFilteredLeads({ page: 1, limit: 1, stage: 'Replied' })).total;
+      onboarded = (await fetchFilteredLeads({ page: 1, limit: 1, stage: 'Onboarded to Tal' })).total;
+
+      let emailCount = await supabase
+        .from('email_logs')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'sent');
+      if (!emailCount.error && Number.isFinite(Number(emailCount.count))) {
+        emailed = Number(emailCount.count);
+      } else {
+        emailed = 0;
+      }
+    }
+    const autoPullEnabled = isMock ? mockSettings.auto_pull_enabled : Boolean(settings?.auto_pull_enabled);
+    const lastAutoPull = isMock ? mockSettings.last_auto_pull : (settings?.last_auto_pull || null);
+    const scheduleState = getAutoPullScheduleState({ lastAutoPull });
 
     return res.json({
       success: true,
-      totalLeads: source.length,
-      selected: stageCount('Selected'),
-      emailed: stageCount('Email Sent'),
-      replied: stageCount('Replied'),
-      onboarded: stageCount('Onboarded to Tal'),
+      totalLeads,
+      selected,
+      emailed,
+      replied,
+      onboarded,
+      isMock,
       lastScrapeTime: isMock ? lastScrape : lastScrape?.completed_at || null,
       databaseHealth: 'healthy',
       lastScrapeStatus: isMock ? (mockScrapeLogs[0]?.status || null) : (lastScrape?.status || null),
-      autoPullEnabled: isMock ? mockSettings.auto_pull_enabled : null,
-      lastAutoPull: isMock ? mockSettings.last_auto_pull : null,
+      autoPullEnabled,
+      autoPullSchedule: schedule,
+      nextAutoPullAt: autoPullEnabled ? scheduleState.nextRunAt : null,
+      lastAutoPull,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -988,31 +1242,43 @@ router.get('/search-history', async (req, res) => {
 
 router.post('/auto-pull/toggle', async (req, res) => {
   const enabled = Boolean(req.body.enabled);
-  if (isMock) {
-    mockSettings.auto_pull_enabled = enabled;
-    mockSettings.updated_at = nowIso();
-    return res.json({ success: true, enabled });
-  }
-  const attempts = [
-    { id: 1, auto_pull_enabled: enabled, updated_at: nowIso() },
-    { id: 1, auto_pull_enabled: enabled },
-    { auto_pull_enabled: enabled, updated_at: nowIso() },
-    { auto_pull_enabled: enabled },
-  ];
-  let update = null;
-  for (const payload of attempts) {
-    update = await supabase.from('settings').upsert(payload, { onConflict: 'id' }).select('*').limit(1);
-    if (!update.error) break;
-  }
-  if (update?.error) {
-    // Non-blocking fallback for partial schemas: keep API usable.
-    mockSettings.auto_pull_enabled = enabled;
-    mockSettings.updated_at = nowIso();
-  }
-  return res.json({ success: true, enabled });
+  const saved = await persistSettings({ auto_pull_enabled: enabled });
+  const schedule = normalizeAutoPullSchedule(
+    saved?.auto_pull_schedule || getAutoPullScheduleState().schedule || mockSettings.auto_pull_schedule || DEFAULT_AUTO_PULL_SCHEDULE
+  );
+  setAutoPullSchedule(schedule);
+  const lastAutoPull = saved?.last_auto_pull || mockSettings.last_auto_pull || null;
+  const scheduleState = getAutoPullScheduleState({ lastAutoPull });
+  return res.json({
+    success: true,
+    enabled,
+    autoPullSchedule: schedule,
+    nextAutoPullAt: enabled ? scheduleState.nextRunAt : null,
+  });
+});
+
+router.post('/auto-pull/schedule', async (req, res) => {
+  const normalized = normalizeAutoPullSchedule(req.body.schedule || DEFAULT_AUTO_PULL_SCHEDULE);
+  const saved = await persistSettings({ auto_pull_schedule: normalized });
+  const enabled = Boolean(saved?.auto_pull_enabled ?? mockSettings.auto_pull_enabled);
+  setAutoPullSchedule(normalized);
+  const lastAutoPull = saved?.last_auto_pull || mockSettings.last_auto_pull || null;
+  const scheduleState = getAutoPullScheduleState({ lastAutoPull });
+  return res.json({
+    success: true,
+    autoPullSchedule: normalized,
+    autoPullEnabled: enabled,
+    nextAutoPullAt: enabled ? scheduleState.nextRunAt : null,
+  });
 });
 
 router.post('/auto-pull/run', async (req, res) => {
+  const settings = await fetchSettings();
+  const enabled = isMock ? mockSettings.auto_pull_enabled : Boolean(settings?.auto_pull_enabled);
+  if (!enabled) {
+    return res.json({ success: true, skipped: true, message: 'Auto pull is disabled' });
+  }
+
   const combos = [
     ['Engineering', 'Mumbai'],
     ['Engineering', 'Delhi'],
@@ -1043,11 +1309,7 @@ router.post('/auto-pull/run', async (req, res) => {
     return res.json({ success: true, results });
   }
 
-  await supabase.from('settings').upsert({
-    id: 1,
-    last_auto_pull: nowIso(),
-    updated_at: nowIso(),
-  }, { onConflict: 'id' });
+  await persistSettings({ last_auto_pull: nowIso() });
 
   return res.json({ success: true, results });
 });

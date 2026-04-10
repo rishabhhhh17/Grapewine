@@ -34,6 +34,11 @@ const Dashboard = ({
   leads,
   loading,
   searchMessage,
+  searchMeta,
+  lastSearchAction,
+  isMockMode,
+  totalLeads,
+  emailedCount,
   leadCountLabel,
   currentFilters,
   onSearchDatabase,
@@ -43,9 +48,11 @@ const Dashboard = ({
   onSendEmail,
   onBulkEmail,
   onBlacklist,
+  onStageChange,
 }) => {
   const [selected, setSelected] = useState(new Set());
   const [preview, setPreview] = useState(null);
+  const [viewMode, setViewMode] = useState('card');
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkSubject, setBulkSubject] = useState(defaultSubject);
   const [bulkBody, setBulkBody] = useState(defaultBody);
@@ -54,33 +61,69 @@ const Dashboard = ({
 
   const visibleLeads = useMemo(() => {
     const search = String(currentFilters.search || '').trim().toLowerCase();
+    const stageFilter = String(currentFilters.stageFilter || 'all');
+    const sourceFilter = String(currentFilters.sourceFilter || 'all');
+    const sortBy = String(currentFilters.sortBy || 'activity_desc');
+
+    const sorters = {
+      activity_desc: (a, b) => Number(b.activity_score || 0) - Number(a.activity_score || 0),
+      activity_asc: (a, b) => Number(a.activity_score || 0) - Number(b.activity_score || 0),
+      days_desc: (a, b) => Number(b.days_posted || 0) - Number(a.days_posted || 0),
+      days_asc: (a, b) => Number(a.days_posted || 0) - Number(b.days_posted || 0),
+      name_asc: (a, b) => String(a.name || '').localeCompare(String(b.name || '')),
+    };
+
     return leads
       .filter((lead) => !lead.is_blacklisted)
+      .filter((lead) => (stageFilter === 'all' ? true : stageOf(lead) === stageFilter))
+      .filter((lead) => {
+        if (sourceFilter === 'all') return true;
+        return (lead.source_platforms || []).includes(sourceFilter);
+      })
       .filter((lead) => {
         if (!search) return true;
         return ['name', 'company', 'title', 'city', 'function']
           .some((field) => String(lead[field] || '').toLowerCase().includes(search));
-      });
-  }, [leads, currentFilters.search]);
+      })
+      .sort(sorters[sortBy] || sorters.activity_desc);
+  }, [leads, currentFilters.search, currentFilters.sourceFilter, currentFilters.sortBy, currentFilters.stageFilter]);
 
   const foundLeads = visibleLeads.filter((lead) => stageOf(lead) === 'Found');
-  const sentCount = visibleLeads.filter((lead) => stageOf(lead) === 'Email Sent').length;
   const avgScore = foundLeads.length
     ? Math.round(foundLeads.reduce((sum, lead) => sum + Number(lead.activity_score || 0), 0) / foundLeads.length)
     : 0;
 
   const selectedLeads = visibleLeads.filter((lead) => selected.has(lead.id));
+  const selectedVisibleCount = selectedLeads.length;
+  const allVisibleSelected = visibleLeads.length > 0 && selectedVisibleCount === visibleLeads.length;
 
-  const toggle = (lead) => {
+  const toggleSelectionOnly = (lead) => {
     const next = new Set(selected);
     if (next.has(lead.id)) {
       next.delete(lead.id);
       if (preview?.id === lead.id) setPreview(null);
     } else {
       next.add(lead.id);
-      setPreview(lead);
     }
     setSelected(next);
+  };
+
+  const toggleSelectAllVisible = () => {
+    const next = new Set(selected);
+    if (allVisibleSelected) {
+      visibleLeads.forEach((lead) => next.delete(lead.id));
+    } else {
+      visibleLeads.forEach((lead) => next.add(lead.id));
+    }
+    setSelected(next);
+  };
+
+  const selectLead = async (lead) => {
+    if (stageOf(lead) !== 'Selected') {
+      await onStageChange(lead.id, 'Selected');
+    }
+    setSelected((prev) => new Set(prev).add(lead.id));
+    setPreview(lead);
   };
 
   const sendBulk = async () => {
@@ -101,7 +144,10 @@ const Dashboard = ({
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">Grape Hiring Manager Engine</h1>
+        <h1 className="page-title">
+          Grape Hiring Manager Engine
+          {isMockMode && <span className="mock-badge">Mock Mode</span>}
+        </h1>
         <p className="page-subtitle">Database-first prospecting for Tal. Scrape only when you explicitly choose Search Internet or Manual Pull.</p>
         <hr className="header-line" />
       </div>
@@ -109,7 +155,7 @@ const Dashboard = ({
       <div className="stats-row">
         <div className="stat-card sv">
           <div className="stat-label">Total Leads</div>
-          <div className="stat-num">{visibleLeads.length}</div>
+          <div className="stat-num">{new Intl.NumberFormat().format(totalLeads || 0)}</div>
           <div className="stat-hint">saved in Supabase</div>
         </div>
         <div className="stat-card sc">
@@ -124,8 +170,8 @@ const Dashboard = ({
         </div>
         <div className="stat-card se">
           <div className="stat-label">Emails Sent</div>
-          <div className="stat-num">{sentCount}</div>
-          <div className="stat-hint">from pipeline</div>
+          <div className="stat-num">{emailedCount}</div>
+          <div className="stat-hint">real emails logged</div>
         </div>
       </div>
 
@@ -135,9 +181,24 @@ const Dashboard = ({
         onSearchDatabase={onSearchDatabase}
         onSearchInternet={onSearchInternet}
         onManualPull={onManualPull}
+        searchSource={searchMeta?.source}
         onFilterChange={onFilterChange}
       />
 
+      <div className="filter-match-count">
+        Showing {new Intl.NumberFormat().format(visibleLeads.length)} of {new Intl.NumberFormat().format(totalLeads || 0)} leads
+      </div>
+
+      {(lastSearchAction === 'database' || (lastSearchAction === 'internet' && searchMeta?.source?.includes('internet'))) && (
+        <div className={`result-source-banner ${searchMeta?.source?.startsWith('internet') ? 'internet' : 'database'}`}>
+          <span className="result-source-dot" />
+          <span>
+            {searchMeta?.source?.startsWith('internet')
+              ? `🌐 Fresh from internet. ${searchMeta?.added || 0} new leads saved to your database. ${searchMeta?.updated || 0} already existed and were updated.`
+              : `🗄️ Showing ${visibleLeads.length} loaded leads (total saved: ${new Intl.NumberFormat().format(totalLeads || 0)})`}
+          </span>
+        </div>
+      )}
       {searchMessage && <div className="info-banner">{searchMessage}</div>}
 
       {loading ? (
@@ -153,64 +214,140 @@ const Dashboard = ({
         <div className="empty">
           <div className="empty-orb">⬇</div>
           <div className="empty-h">No leads yet</div>
-          <div className="empty-s">Pull from the internet to start building your hiring manager database.</div>
+          <div className="empty-s">
+            {searchMeta?.source === 'database'
+              ? 'No results in your database for this search. Click Search Internet to find new leads online.'
+              : 'Pull from the internet to start building your hiring manager database.'}
+          </div>
           <button className="btn-primary" onClick={() => onSearchInternet(currentFilters)}>Search Internet</button>
         </div>
       ) : (
-        <div className="leads-grid">
-          {visibleLeads.map((lead, index) => {
-            const isSelected = selected.has(lead.id);
-            return (
-              <div
-                key={lead.id}
-                className={`lc ${isSelected ? 'sel' : ''}`}
-                style={{ animationDelay: `${Math.min(index * 50, 700)}ms` }}
-                onClick={() => toggle(lead)}
+        <>
+          <div className="bulk-select-row">
+            <label className="bulk-select-check">
+              <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} />
+              <span>Select all visible ({visibleLeads.length})</span>
+            </label>
+            <div className="view-toggle">
+              <button
+                className={`view-btn ${viewMode === 'card' ? 'active' : ''}`}
+                onClick={() => setViewMode('card')}
+                title="Card view"
               >
-                <div className="lc-band" />
-                <div className="lc-body">
-                  <div className="lc-top">
-                    <div className={`lc-chk ${isSelected ? 'on' : ''}`} />
-                    <div className="src-badges">
-                      {(lead.source_platforms || []).map((source) => {
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/>
+                  <rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/>
+                </svg>
+              </button>
+              <button
+                className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
+                onClick={() => setViewMode('list')}
+                title="List view"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <rect x="1" y="2" width="14" height="2" rx="1"/><rect x="1" y="7" width="14" height="2" rx="1"/>
+                  <rect x="1" y="12" width="14" height="2" rx="1"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {viewMode === 'card' ? (
+            <div className="leads-grid">
+              {visibleLeads.map((lead, index) => {
+                const isSelected = selected.has(lead.id);
+                return (
+                  <div
+                    key={lead.id}
+                    className={`lc ${isSelected ? 'sel' : ''}`}
+                    style={{ animationDelay: `${Math.min(index * 50, 700)}ms` }}
+                    onClick={() => setPreview(lead)}
+                  >
+                    <div className="lc-band" />
+                    <div className="lc-body">
+                      <div className="lc-top">
+                        <label className="lead-select-check" onClick={(event) => event.stopPropagation()}>
+                          <input type="checkbox" checked={isSelected} onChange={() => toggleSelectionOnly(lead)} />
+                        </label>
+                        <div className="src-badges">
+                          {(lead.source_platforms || []).map((source) => {
+                            const color = SOURCE_COLORS[source] || { bg: 'rgba(255,255,255,0.1)', color: '#d4d4d4' };
+                            return (
+                              <span key={source} className="src-b" style={{ background: color.bg, color: color.color }}>{source}</span>
+                            );
+                          })}
+                        </div>
+                        <div className={`score-ring ${scoreRing(lead.activity_score)}`} title="Activity score">{lead.activity_score}</div>
+                      </div>
+                      <div>
+                        <div className="lc-name">{lead.name}</div>
+                        <div className="lc-role">{lead.title}</div>
+                      </div>
+                      <div className="lc-meta">
+                        <div className="lc-row co">{lead.company}</div>
+                        <div className="lc-row">{lead.city}</div>
+                      </div>
+                      <div className="lc-blurb">{blurb(lead)}</div>
+                    </div>
+                    <div className="lc-foot" onClick={(event) => event.stopPropagation()}>
+                      <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">View LinkedIn</a>
+                      <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={async () => { await selectLead(lead); }}>Email</button>
+                      <button className="btn-ghost small" onClick={() => onBlacklist(lead.id)}>Blacklist</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="leads-list">
+              <div className="ll-header">
+                <div className="ll-col chk" />
+                <div className="ll-col name">Name</div>
+                <div className="ll-col title">Title</div>
+                <div className="ll-col company">Company</div>
+                <div className="ll-col city">City</div>
+                <div className="ll-col fn">Function</div>
+                <div className="ll-col score">Score</div>
+                <div className="ll-col sources">Sources</div>
+                <div className="ll-col actions" />
+              </div>
+              {visibleLeads.map((lead) => {
+                const isSelected = selected.has(lead.id);
+                return (
+                  <div
+                    key={lead.id}
+                    className={`ll-row ${isSelected ? 'sel' : ''}`}
+                    onClick={() => setPreview(lead)}
+                  >
+                    <div className="ll-col chk" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={isSelected} onChange={() => toggleSelectionOnly(lead)} />
+                    </div>
+                    <div className="ll-col name">
+                      <span className="ll-name">{lead.name}</span>
+                    </div>
+                    <div className="ll-col title ll-muted">{lead.title}</div>
+                    <div className="ll-col company ll-green">{lead.company}</div>
+                    <div className="ll-col city ll-muted">{lead.city}</div>
+                    <div className="ll-col fn ll-muted">{lead.function}</div>
+                    <div className="ll-col score">
+                      <span className={`score-ring small ${scoreRing(lead.activity_score)}`}>{lead.activity_score}</span>
+                    </div>
+                    <div className="ll-col sources">
+                      {(lead.source_platforms || []).slice(0, 2).map((source) => {
                         const color = SOURCE_COLORS[source] || { bg: 'rgba(255,255,255,0.1)', color: '#d4d4d4' };
-                        return (
-                          <span key={source} className="src-b" style={{ background: color.bg, color: color.color }}>
-                            {source}
-                          </span>
-                        );
+                        return <span key={source} className="src-b" style={{ background: color.bg, color: color.color }}>{source}</span>;
                       })}
                     </div>
-                    <div
-                      className={`score-ring ${scoreRing(lead.activity_score)}`}
-                      title="Scored by recency, source count, and seniority."
-                    >
-                      {lead.activity_score}
+                    <div className="ll-col actions" onClick={(e) => e.stopPropagation()}>
+                      <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">LinkedIn</a>
+                      <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={async () => { await selectLead(lead); }}>Email</button>
                     </div>
                   </div>
-
-                  <div>
-                    <div className="lc-name">{lead.name}</div>
-                    <div className="lc-role">{lead.title}</div>
-                  </div>
-
-                    <div className="lc-meta">
-                      <div className="lc-row co">{lead.company}</div>
-                      <div className="lc-row">{lead.city}</div>
-                    </div>
-                  <div className="lc-blurb">{blurb(lead)}</div>
-                </div>
-                <div className="lc-foot" onClick={(event) => event.stopPropagation()}>
-                  <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">View LinkedIn</a>
-                  <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={() => toggle(lead)}>
-                    {isSelected ? 'Selected ✓' : 'Select'}
-                  </button>
-                  <button className="btn-ghost small" onClick={() => onBlacklist(lead.id)}>Blacklist</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {selected.size > 0 && (
@@ -260,6 +397,7 @@ const Dashboard = ({
                 <label>Body</label>
                 <textarea rows={8} value={bulkBody} onChange={(event) => setBulkBody(event.target.value)} />
                 <p>Send schedule: 10 emails per hour</p>
+                <p>Use [FirstName], [Company], [Role], [Function], [City] to personalize each recipient automatically.</p>
               </div>
             </div>
             {bulkSending && (
