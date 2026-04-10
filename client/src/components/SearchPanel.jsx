@@ -34,6 +34,7 @@ const SearchPanel = ({
   const [stageFilter, setStageFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [sortBy, setSortBy] = useState('activity_desc');
+  const [pullCount, setPullCount] = useState(50);
 
   const selectedSources = useMemo(() => [...sources], [sources]);
 
@@ -47,8 +48,9 @@ const SearchPanel = ({
       stageFilter,
       sourceFilter,
       sortBy,
+      pullCount,
     }),
-    [role, city, strictHiringManager, search, selectedSources, sourceFilter, sortBy, stageFilter]
+    [role, city, strictHiringManager, search, selectedSources, sourceFilter, sortBy, stageFilter, pullCount]
   );
 
   const syncFilters = (nextFilters = filters) => {
@@ -190,6 +192,28 @@ const SearchPanel = ({
                 >
                   {SORT_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select>
+              </div>
+              <div className="field-grp">
+                <div className="field-lbl">Leads per pull</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    className="search-select"
+                    type="number"
+                    min={10}
+                    max={500}
+                    step={10}
+                    value={pullCount}
+                    style={{ width: 80 }}
+                    onChange={(event) => {
+                      const next = Math.max(10, Math.min(500, Number(event.target.value) || 50));
+                      setPullCount(next);
+                      syncFilters({ ...filters, pullCount: next });
+                    }}
+                  />
+                  <span style={{ color: 'var(--t3)', fontSize: 12 }}>
+                    Fresh pull &amp; DB view limit
+                  </span>
+                </div>
               </div>
               <div
                 className="tog-wrap"

@@ -97,6 +97,22 @@ const scrapeOnePlatform = async (platform, role, city, apiKey) => {
   }
 };
 
+// Slice raw scrape rows to exactly `count` unique companies, adding batchTag for uniqueness.
+const sliceMockToCount = (allJobs, selectedSources, count) => {
+  const batchTag = String(Date.now()).slice(-6);
+  const seen = new Set();
+  const result = [];
+  for (const job of allJobs) {
+    if (!selectedSources.includes(job.source)) continue;
+    if (!seen.has(job.company)) {
+      if (seen.size >= count) break;
+      seen.add(job.company);
+    }
+    result.push({ ...job, company: `${job.company} [${batchTag}]` });
+  }
+  return result;
+};
+
 const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {}) => {
   const selectedSources = Array.isArray(options.sources) && options.sources.length
     ? options.sources
@@ -105,12 +121,12 @@ const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {})
     .map((name) => PLATFORM_BY_NAME[name])
     .filter(Boolean);
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const count = Math.max(10, Math.min(500, Number(options.count || 50)));
 
   const apiKey = process.env.FIRECRAWL_API_KEY;
   if (!apiKey) {
     console.log('No FIRECRAWL_API_KEY found. Returning mock data.');
-    const mockData = fallbackMockData(role, strictHiringManager)
-      .filter((job) => selectedSources.includes(job.source));
+    const mockData = sliceMockToCount(fallbackMockData(role, strictHiringManager), selectedSources, count);
     if (onProgress) {
       onProgress({
         stage: 'mock',
@@ -160,8 +176,7 @@ const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {})
 
   if (allJobs.length === 0) {
     console.log('All platforms returned no results. Falling back to mock data.');
-    const fallback = fallbackMockData(role, strictHiringManager)
-      .filter((job) => selectedSources.includes(job.source));
+    const fallback = sliceMockToCount(fallbackMockData(role, strictHiringManager), selectedSources, count);
     if (onProgress) {
       onProgress({ stage: 'fallback', message: `Falling back to mock results (${fallback.length})` });
     }

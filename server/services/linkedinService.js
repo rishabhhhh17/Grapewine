@@ -94,6 +94,7 @@ const findHiringManagersBulk = async (companies, role, strictHiringManager) => {
           const bestMatch = validResults[0];
           return {
             name: bestMatch.title.split('-')[0].split('|')[0].trim(),
+            title: bestMatch.title,
             linkedinUrl: bestMatch.url
           };
         }
@@ -101,13 +102,13 @@ const findHiringManagersBulk = async (companies, role, strictHiringManager) => {
 
       // Fallback to Indian persona rather than "Unknown"
       const fallback = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
-      return { name: fallback.name, linkedinUrl: '#' };
+      return { name: fallback.name, title: fallback.title, linkedinUrl: '#' };
     });
   } catch (error) {
     console.error('Apify error:', error.message);
     return companies.map((c, i) => {
       const fallback = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
-      return { name: fallback.name, linkedinUrl: '#' };
+      return { name: fallback.name, title: fallback.title, linkedinUrl: '#' };
     });
   }
 };

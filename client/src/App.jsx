@@ -31,6 +31,7 @@ function App() {
     stageFilter: 'all',
     sourceFilter: 'all',
     sortBy: 'activity_desc',
+    pullCount: 50,
   });
   const currentFiltersRef = useRef(currentFilters);
 
@@ -86,14 +87,16 @@ function App() {
 
   const loadInitial = useCallback(async () => {
     setLoading(true);
-    try {
-      await Promise.all([fetchLeads(), refreshStats(), refreshSearchHistory()]);
-      setInitialized(true);
-    } catch (error) {
-      setToast(error.message);
-    } finally {
-      setLoading(false);
+    const [leadsResult, , ] = await Promise.allSettled([
+      fetchLeads(),
+      refreshStats(),
+      refreshSearchHistory(),
+    ]);
+    if (leadsResult.status === 'rejected') {
+      setToast(`Failed to load leads: ${leadsResult.reason?.message || 'Network error'}`);
     }
+    setInitialized(true);
+    setLoading(false);
   }, [fetchLeads, refreshSearchHistory, refreshStats]);
 
   useEffect(() => {
@@ -177,6 +180,7 @@ function App() {
           sources: filters.sources,
           search: filters.search,
           forceInternet,
+          count: filters.pullCount || 50,
         }),
       });
       const data = await res.json();
@@ -197,7 +201,7 @@ function App() {
         city: filters.city === 'all' ? undefined : filters.city,
         search: filters.search || undefined,
         page: 1,
-        limit: 5000,
+        limit: filters.pullCount || 50,
       });
 
       await Promise.all([refreshStats(), refreshSearchHistory()]);
@@ -219,9 +223,9 @@ function App() {
         city: filters.city === 'all' ? undefined : filters.city,
         search: filters.search || undefined,
         page: 1,
-        limit: 5000,
+        limit: filters.pullCount || 50,
       });
-      setSearchMessage(`Database search complete. ${result.total} lead(s) in Supabase.`);
+      setSearchMessage(`Database search complete. Showing ${result.leads.length} of ${result.total} lead(s) in Supabase.`);
       setSearchMeta({ source: 'database', added: 0, updated: 0, total: result.total });
       await Promise.all([refreshStats(), refreshSearchHistory()]);
     } catch (error) {
@@ -254,6 +258,7 @@ function App() {
           city: filters.city,
           strictHiringManager: filters.strictHiringManager,
           sources: filters.sources,
+          count: filters.pullCount || 50,
           sessionId,
         }),
       });
@@ -263,6 +268,7 @@ function App() {
         role: filters.role,
         city: filters.city,
         search: filters.search,
+        limit: filters.pullCount || 50,
       });
       await Promise.all([refreshStats(), refreshSearchHistory()]);
       setToast(data.message || 'Manual pull complete');

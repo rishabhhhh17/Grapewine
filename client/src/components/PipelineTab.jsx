@@ -1,74 +1,83 @@
-import React from 'react';
+/* eslint-disable react/prop-types */
+
+const COLS = ['Found', 'Selected', 'Email Sent', 'Replied', 'Onboarded to Tal'];
+
+const COL_COLOR = {
+  Found: 'var(--t3)',
+  Selected: 'var(--ok)',
+  'Email Sent': 'var(--c)',
+  Replied: 'var(--am)',
+  'Onboarded to Tal': 'var(--ok)',
+};
+
+const scoreStyle = (score) => (
+  score >= 8
+    ? { background: 'rgba(74,222,128,.16)', color: 'var(--ok)' }
+    : score >= 5
+      ? { background: 'rgba(251,191,36,.16)', color: 'var(--am)' }
+      : { background: 'rgba(248,113,113,.16)', color: 'var(--bad)' }
+);
+
+const stageOf = (lead) => lead.pipeline_stage || lead.status || 'Found';
 
 const PipelineTab = ({ leads, onStatusChange }) => {
-  const columns = ['Found', 'Selected', 'Email Sent', 'Replied', 'Onboarded to Tal'];
-
-  const getLeadsByStatus = (status) => {
-    return leads.filter(l => l.status === status || (status === 'Found' && !l.status));
-  };
+  const getLeads = (col) => leads.filter((lead) => stageOf(lead) === col);
 
   return (
     <div>
-      <div style={{ marginBottom: '32px' }}>
-        <h2 style={{ fontSize: '32px', fontWeight: 700, fontFamily: 'Outfit', letterSpacing: '-0.5px' }}>Pipeline View</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '16px', marginTop: '8px' }}>
-          Track hiring manager engagement across all stages.
-        </p>
+      <div className="page-header">
+        <h1 className="page-title">Pipeline</h1>
+        <p className="page-subtitle">Read-only pipeline. Lead stages move automatically from app actions.</p>
+        <hr className="header-line" />
       </div>
 
-      <div className="pipeline-board">
-        {columns.map(col => {
-          const colLeads = getLeadsByStatus(col);
+      <div className="kanban">
+        {COLS.map((col) => {
+          const colLeads = getLeads(col);
           return (
-            <div key={col} className="pipeline-col">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <h3 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  {col}
-                </h3>
-                <span style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border-highlight)', padding: '2px 10px', borderRadius: '12px', fontSize: '12px', color: 'var(--text-main)', fontWeight: '600' }}>
-                  {colLeads.length}
-                </span>
+            <div key={col} className="kb-col">
+              <div className="kb-col-hd">
+                <span className="kb-col-name" style={{ color: COL_COLOR[col] }}>{col}</span>
+                <span className="kb-badge">{colLeads.length}</span>
               </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', minHeight: '400px' }}>
-                {colLeads.map(lead => (
-                  <div key={lead.id} className="card">
-                    <div style={{ fontWeight: 600, fontSize: '16px', color: 'white', marginBottom: '6px' }}>
-                      {lead.name}
+              {colLeads.length === 0
+                ? <div className="kb-empty">No leads in this stage</div>
+                : colLeads.map((lead) => (
+                  <div
+                    key={lead.id}
+                    className="kb-card"
+                  >
+                    <div className="kb-name">{lead.name}</div>
+                    <div className="kb-ttl">{lead.title}</div>
+                    <div className="kb-foot">
+                      <span className="kb-co">{lead.company}</span>
+                      <span className="kb-score" style={scoreStyle(Number(lead.activity_score || 0))}>
+                        {lead.activity_score}/10
+                      </span>
                     </div>
-                    <div style={{ fontSize: '14px', color: 'var(--secondary)', marginBottom: '8px', fontWeight: 500 }}>
-                      {lead.title}
-                    </div>
-                    <div style={{ fontSize: '13px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>{lead.company}</span>
-                      <span className="badge" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>Score: {lead.activity_score}</span>
-                    </div>
-
-                    <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between' }}>
-                      <select 
-                        value={lead.status || 'Found'} 
-                        onChange={(e) => onStatusChange(lead.id, e.target.value)}
-                        style={{
-                          background: 'rgba(255,255,255,0.05)',
-                          border: '1px solid var(--glass-border)',
-                          color: 'var(--text-main)',
-                          borderRadius: '8px',
-                          padding: '6px 10px',
-                          fontSize: '12px',
-                          outline: 'none',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        {columns.map(c => <option key={c} value={c} style={{ background: 'var(--bg-dark)' }}>{c}</option>)}
-                      </select>
-                      
-                      <a href={lead.linkedin_url} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600, background: 'rgba(99,102,241,0.1)', padding: '4px 8px', borderRadius: '6px' }}>
-                        Profile ↗
-                      </a>
-                    </div>
+                    {(lead.source_platforms || []).length > 0 && (
+                      <div className="src-badges" style={{ marginTop: 8 }}>
+                        {(lead.source_platforms || []).slice(0, 2).map((source) => (
+                          <span key={source} className="src-b">{source}</span>
+                        ))}
+                      </div>
+                    )}
+                    {col === 'Email Sent' && (
+                      <div className="kb-actions">
+                        <button className="btn-secondary" onClick={() => onStatusChange(lead.id, 'Replied')}>
+                          Mark as Replied
+                        </button>
+                      </div>
+                    )}
+                    {col === 'Replied' && (
+                      <div className="kb-actions">
+                        <button className="btn-secondary" onClick={() => onStatusChange(lead.id, 'Onboarded to Tal')}>
+                          Mark as Onboarded
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
-              </div>
             </div>
           );
         })}

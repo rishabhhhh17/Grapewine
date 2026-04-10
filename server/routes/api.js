@@ -687,6 +687,7 @@ const runInternetPipeline = async ({
   city,
   strictHiringManager = false,
   sources = DEFAULT_SOURCES,
+  count = 50,
   triggeredBy = 'manual',
   onProgress,
 }) => {
@@ -697,8 +698,8 @@ const runInternetPipeline = async ({
   // No Firecrawl key → fast mock path: skip scrape + Apify entirely
   if (!process.env.FIRECRAWL_API_KEY) {
     try {
-      if (onProgress) onProgress({ stage: 'mock', message: 'Mock mode — generating test leads...' });
-      const prepared = generateMockLeads(role, city, 30);
+      if (onProgress) onProgress({ stage: 'mock', message: `Mock mode — generating ${count} test leads...` });
+      const prepared = generateMockLeads(role, city, count);
       console.log(`[mock pipeline] Generated ${prepared.length} leads. Saving to Supabase...`);
       if (onProgress) onProgress({ stage: 'saving', message: `Saving ${prepared.length} leads to database...` });
       const { added, updated } = await upsertLeads(prepared, {
@@ -720,7 +721,7 @@ const runInternetPipeline = async ({
 
   let rawJobs = [];
   try {
-    rawJobs = await scrapeAllPlatforms(role, city, strictHiringManager, { sources, onProgress });
+    rawJobs = await scrapeAllPlatforms(role, city, strictHiringManager, { sources, count, onProgress });
     const prepared = await buildLeadsFromJobs({ rawJobs, role, city, strictHiringManager, onProgress });
     if (onProgress) onProgress({ stage: 'saving', message: 'Saving leads to Supabase...' });
     const { added, updated } = await upsertLeads(prepared, {
@@ -842,6 +843,7 @@ router.post('/search', async (req, res) => {
   const strictHiringManager = Boolean(req.body.strictHiringManager);
   const sources = Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : DEFAULT_SOURCES;
   const naturalSearch = String(req.body.search || '').trim();
+  const count = Math.max(10, Math.min(500, Number(req.body.count || 50)));
 
   try {
     let effectiveRole = role;
@@ -872,6 +874,7 @@ router.post('/search', async (req, res) => {
         city: effectiveCity,
         strictHiringManager,
         sources,
+        count,
         triggeredBy: 'search_internet',
       });
       scrapeAdded = result.added;
@@ -938,6 +941,7 @@ router.post('/manual-pull', async (req, res) => {
   const city = req.body.city;
   const sources = Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : DEFAULT_SOURCES;
   const strictHiringManager = Boolean(req.body.strictHiringManager);
+  const count = Math.max(10, Math.min(500, Number(req.body.count || 50)));
   const sessionId = req.body.sessionId || randomUUID();
 
   if (!role || !city) {
@@ -945,13 +949,14 @@ router.post('/manual-pull', async (req, res) => {
   }
 
   const push = (payload) => emitManualEvent(sessionId, 'log', { at: nowIso(), ...payload });
-  push({ message: `Manual pull started for ${role} in ${city}`, sources });
+  push({ message: `Manual pull started for ${role} in ${city} (${count} leads)`, sources });
 
   const result = await runInternetPipeline({
     role,
     city,
     strictHiringManager,
     sources,
+    count,
     triggeredBy: 'manual_pull',
     onProgress: (evt) => push(evt),
   });
