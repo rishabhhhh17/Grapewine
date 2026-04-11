@@ -179,7 +179,7 @@ function App() {
     setLastSearchAction(null);
   }, [activeTab]);
 
-  // Re-fetch when role / city / search filters change (real mode only)
+  // Re-fetch from Supabase when role / city / search filters change (real mode only)
   useEffect(() => {
     if (!initialized || isDemoMode) return undefined;
     const timer = setTimeout(() => {
@@ -193,6 +193,12 @@ function App() {
     }, 250);
     return () => clearTimeout(timer);
   }, [currentFilters.role, currentFilters.city, currentFilters.search, fetchLeads, initialized, isDemoMode]);
+
+  // Re-filter mock data locally when filters change (demo mode only — zero API calls)
+  useEffect(() => {
+    if (!initialized || !isDemoMode) return;
+    setLeads(applyDemoFilters(MOCK_LEADS, currentFilters));
+  }, [currentFilters.role, currentFilters.city, currentFilters.search, initialized, isDemoMode]);
 
   // Realtime Supabase subscription (real mode only)
   useEffect(() => {
@@ -545,6 +551,11 @@ function App() {
             <SearchHistoryTab
               history={searchHistory}
               onApply={async (entry) => {
+                if (isDemoMode) {
+                  setLeads(applyDemoFilters(MOCK_LEADS, { role: entry.role, city: entry.city }));
+                  setActiveTab('Dashboard');
+                  return;
+                }
                 await fetchLeads({
                   role: entry.role || 'Engineering',
                   city: entry.city || 'Bangalore',
