@@ -12,7 +12,8 @@ const buildLinkedInJobsUrl = (role, city) => {
   return `https://www.linkedin.com/jobs/search/?keywords=${keyword}&location=${location}&f_TPR=r604800&sortBy=DD`;
 };
 
-// Scrape LinkedIn Jobs via Apify to get posting dates & company names
+// Scrape LinkedIn Jobs via Apify to get posting dates & company names (unused — kept for future re-enablement)
+// eslint-disable-next-line no-unused-vars
 const scrapeLinkedInJobs = async (role, city, count, onProgress) => {
   const apiKey = process.env.APIFY_API_KEY;
   if (!apiKey) return [];
@@ -220,32 +221,6 @@ const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {})
     if (onProgress) onProgress({ stage: 'skip_apify', message: 'APIFY_API_KEY not configured — skipping LinkedIn search.' });
   }
 
-  // ── Step 2: LinkedIn Jobs via Apify (optional enrichment, get posting dates) ──
-  if (apifyKey && leads.length < count) {
-    try {
-      const jobPostings = await scrapeLinkedInJobs(role, city, count - leads.length, onProgress);
-      if (jobPostings.length > 0) {
-        console.log(`[pipeline] LinkedIn Jobs: ${jobPostings.length} postings for date context`);
-        // Merge posting dates into existing leads by company match
-        const postingByCompany = new Map(
-          jobPostings.map((j) => [j.company.toLowerCase(), j])
-        );
-        leads = leads.map((lead) => {
-          const posting = postingByCompany.get(String(lead.company || '').toLowerCase());
-          if (posting && posting.daysPosted > 0) {
-            return {
-              ...lead,
-              days_posted: posting.daysPosted,
-              activity_score: calculateActivityScore(posting.daysPosted, lead.source_platforms?.length || 1, lead.title),
-            };
-          }
-          return lead;
-        });
-      }
-    } catch (err) {
-      console.log(`[pipeline] LinkedIn Jobs enrichment failed: ${err.message}`);
-    }
-  }
 
   // ── Step 3: Firecrawl on scraper-friendly boards (optional) ──────────────
   if (firecrawlKey) {

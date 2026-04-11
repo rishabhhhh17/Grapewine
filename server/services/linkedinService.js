@@ -59,39 +59,31 @@ const parseLinkedInSnippet = (result) => {
 // Each Google query yields ~3-5 parseable LinkedIn profiles (rest are company pages).
 // Always run ALL title variants to maximise yield.
 const buildPeopleQueries = (role, city, strictHiringManager) => {
+  // Keep to 3 high-yield queries per role — fewer queries = faster Apify run (~30s vs 120s)
   const TITLE_MAP = {
     Engineering: [
-      `"Head of Engineering" "${city}" India`,
-      `"VP Engineering" OR "VP of Engineering" "${city}" India`,
-      `"Director of Engineering" "${city}" India`,
-      `"CTO" "${city}" India startup`,
-      `"Engineering Manager" "${city}" India`,
-      `"Chief Technology Officer" "${city}" India`,
+      `"Head of Engineering" OR "VP Engineering" "${city}" India`,
+      `"Director of Engineering" OR "CTO" "${city}" India startup`,
+      `"Engineering Manager" OR "Principal Engineer" "${city}" India`,
     ],
     Product: [
-      `"Head of Product" "${city}" India`,
-      `"VP Product" OR "VP of Product" "${city}" India`,
-      `"Chief Product Officer" "${city}" India`,
-      `"Director of Product" "${city}" India`,
-      `"Group Product Manager" "${city}" India`,
-      `"Product Director" "${city}" India`,
+      `"Head of Product" OR "VP Product" "${city}" India`,
+      `"Chief Product Officer" OR "Director of Product" "${city}" India`,
+      `"Group Product Manager" OR "Product Director" "${city}" India`,
     ],
     Marketing: [
-      `"Head of Marketing" "${city}" India`,
-      `"VP Marketing" "${city}" India`,
-      `"CMO" "${city}" India startup`,
-      `"Director of Marketing" "${city}" India`,
-      `"Head of Growth" "${city}" India`,
-      `"Chief Marketing Officer" "${city}" India`,
+      `"Head of Marketing" OR "VP Marketing" "${city}" India`,
+      `"CMO" OR "Chief Marketing Officer" "${city}" India startup`,
+      `"Director of Marketing" OR "Head of Growth" "${city}" India`,
     ],
   };
 
   const normRole = Object.keys(TITLE_MAP).find((k) => k.toLowerCase() === String(role || '').toLowerCase()) || 'Engineering';
   let queries = TITLE_MAP[normRole] || TITLE_MAP.Engineering;
 
-  // In strict mode keep only senior titles (VP, Head, Director, C-suite)
+  // In strict mode drop manager-level query
   if (strictHiringManager) {
-    queries = queries.filter((q) => !/manager/i.test(q));
+    queries = queries.slice(0, 2);
   }
 
   return queries.map((q) => `site:linkedin.com/in/ ${q}`);
@@ -110,7 +102,7 @@ const searchLinkedInDirectly = async (role, city, count, onProgress, strictHirin
   const run = await client.actor('apify/google-search-scraper').call({
     queries: queries.join('\n'),
     maxPagesPerQuery: 1,
-  }, { waitSecs: 120 });
+  }, { waitSecs: 60 });
 
   const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
@@ -176,7 +168,7 @@ const findHiringManagersBulk = async (companies, role, strictHiringManager) => {
     const run = await client.actor('apify/google-search-scraper').call({
       queries: queries.join('\n'),
       maxPagesPerQuery: 1,
-    }, { waitSecs: 120 });
+    }, { waitSecs: 60 });
 
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
