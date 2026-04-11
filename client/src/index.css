@@ -1566,6 +1566,54 @@ a {
   }
 }
 
+/* ── API / service status list (sidebar) ─────────────────────────────────── */
+.api-status-list {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.api-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: default;
+}
+
+.api-status-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.api-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.api-dot.on      { background: var(--ok); }
+.api-dot.off     { background: #52525b; }
+.api-dot.unknown { background: #3f3f46; }
+
+.api-label {
+  color: #a1a1aa;
+  font-size: 11px;
+  flex: 1;
+}
+
+.api-state {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: #3f3f46;
+}
+
+.api-dot.on  ~ .api-state { color: rgba(34, 197, 94, 0.6); }
+.api-dot.off ~ .api-state { color: #3f3f46; }
+
 @media (max-width: 1380px) {
   .stats-row {
     grid-template-columns: repeat(2, minmax(180px, 1fr));

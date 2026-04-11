@@ -21,7 +21,10 @@ const SearchPanel = ({
   onManualPull,
   searchSource,
   onFilterChange,
+  apiStatus,
 }) => {
+  const internetEnabled = !apiStatus || apiStatus.firecrawl !== false;
+  const internetTitle = internetEnabled ? undefined : 'Add FIRECRAWL_API_KEY to enable internet scraping';
   const [role, setRole] = useState('all');
   const [city, setCity] = useState('all');
   const [strictHiringManager, setStrictHiringManager] = useState(false);
@@ -258,10 +261,20 @@ const SearchPanel = ({
           <button className="btn-primary btn-search-db" onClick={() => onSearchDatabase(syncFilters())} disabled={loading}>
             Search Database
           </button>
-          <button className="btn-secondary btn-search-internet" onClick={() => onSearchInternet(syncFilters())} disabled={loading}>
+          <button
+            className="btn-secondary btn-search-internet"
+            onClick={() => internetEnabled && onSearchInternet(syncFilters())}
+            disabled={loading || !internetEnabled}
+            title={internetTitle}
+          >
             <span role="img" aria-label="globe">🌐</span> Search Internet
           </button>
-          <button className="btn-secondary" onClick={() => setManualOpen(true)} disabled={loading}>
+          <button
+            className="btn-secondary"
+            onClick={() => setManualOpen(true)}
+            disabled={loading || !internetEnabled}
+            title={internetEnabled ? undefined : 'Add FIRECRAWL_API_KEY to enable manual pull'}
+          >
             ⬇ Manual Pull
           </button>
         </div>

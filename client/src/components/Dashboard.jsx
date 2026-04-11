@@ -13,7 +13,10 @@ const SOURCE_COLORS = {
 };
 
 const stageOf = (lead) => lead.pipeline_stage || lead.status || 'Found';
-const scoreRing = (score) => (score >= 8 ? 'sg' : score >= 5 ? 'sw' : 'sr');
+const scoreRing = (score) => {
+  const s = Number(score || 0);
+  return s >= 8 ? 'sg' : s >= 5 ? 'sw' : 'sr';
+};
 const defaultSubject = 'We have [Role] candidates ready for [Company]';
 const defaultBody = 'Hi [FirstName], noticed [Company] is actively building its [Function] team in [City]. At Grape, we have 300 pre-vetted candidates ready to interview. Our AI Tal has already done deep assessments on each of them so you skip straight to the final conversation. Worth a quick look?';
 
@@ -38,6 +41,7 @@ const Dashboard = ({
   lastSearchAction,
   isMockMode,
   totalLeads,
+  selectedCount,
   emailedCount,
   leadCountLabel,
   currentFilters,
@@ -49,6 +53,7 @@ const Dashboard = ({
   onBulkEmail,
   onBlacklist,
   onStageChange,
+  apiStatus,
 }) => {
   const [selected, setSelected] = useState(new Set());
   const [preview, setPreview] = useState(null);
@@ -160,8 +165,8 @@ const Dashboard = ({
         </div>
         <div className="stat-card sc">
           <div className="stat-label">Selected</div>
-          <div className="stat-num">{selected.size}</div>
-          <div className="stat-hint">ready for outreach</div>
+          <div className="stat-num">{Number(selectedCount || 0)}</div>
+          <div className="stat-hint">in pipeline</div>
         </div>
         <div className="stat-card sw">
           <div className="stat-label">Average Score</div>
@@ -183,6 +188,7 @@ const Dashboard = ({
         onManualPull={onManualPull}
         searchSource={searchMeta?.source}
         onFilterChange={onFilterChange}
+        apiStatus={apiStatus}
       />
 
       <div className="filter-match-count">

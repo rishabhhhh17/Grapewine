@@ -18,6 +18,7 @@ function App() {
   const [lastSearchAction, setLastSearchAction] = useState(null);
   const [toast, setToast] = useState('');
   const [stats, setStats] = useState(null);
+  const [apiStatus, setApiStatus] = useState(null);
   const [searchHistory, setSearchHistory] = useState([]);
   const [autoPullEnabled, setAutoPullEnabled] = useState(false);
   const [autoPullSchedule, setAutoPullSchedule] = useState({ type: 'weekly', dayOfWeek: 1, time: '09:00', intervalHours: 24 });
@@ -85,19 +86,30 @@ function App() {
     return { success: true, leads: allLeads.slice(0, requestedLimit), total };
   }, []);
 
+  const refreshApiStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/health`);
+      const data = await res.json();
+      if (data.services) setApiStatus(data.services);
+    } catch {
+      // server unreachable — leave apiStatus null so UI shows unknown state
+    }
+  }, []);
+
   const loadInitial = useCallback(async () => {
     setLoading(true);
-    const [leadsResult, , ] = await Promise.allSettled([
+    const [leadsResult] = await Promise.allSettled([
       fetchLeads(),
       refreshStats(),
       refreshSearchHistory(),
+      refreshApiStatus(),
     ]);
     if (leadsResult.status === 'rejected') {
       setToast(`Failed to load leads: ${leadsResult.reason?.message || 'Network error'}`);
     }
     setInitialized(true);
     setLoading(false);
-  }, [fetchLeads, refreshSearchHistory, refreshStats]);
+  }, [fetchLeads, refreshSearchHistory, refreshStats, refreshApiStatus]);
 
   useEffect(() => {
     loadInitial();
@@ -370,6 +382,7 @@ function App() {
         autoPullSchedule={autoPullSchedule}
         nextAutoPullAt={nextAutoPullAt}
         onAutoPullScheduleChange={handleAutoPullScheduleChange}
+        apiStatus={apiStatus}
       />
       <main className="main-content">
         {activeTab === 'Dashboard' && (
@@ -381,6 +394,7 @@ function App() {
             lastSearchAction={lastSearchAction}
             isMockMode={Boolean(stats?.isMock)}
             totalLeads={Number(stats?.totalLeads || 0)}
+            selectedCount={Number(stats?.selected || 0)}
             emailedCount={Number(stats?.emailed || 0)}
             leadCountLabel={leadCountLabel}
             currentFilters={currentFilters}
@@ -393,6 +407,7 @@ function App() {
             onBulkEmail={queueBulkEmail}
             onBlacklist={handleBlacklist}
             onStageChange={handleStatusChange}
+            apiStatus={apiStatus}
           />
         )}
         {activeTab === 'Pipeline' && (

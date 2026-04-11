@@ -18,20 +18,32 @@ app.use(express.json());
 
 app.use('/api', apiRoutes);
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
+const logApiKeyStatus = () => {
+  const has = (key) => Boolean(process.env[key]);
+  console.log('\n── Grape Hiring Manager Engine ─────────────────────────');
+  console.log(`  SUPABASE  : ${has('SUPABASE_URL') && has('SUPABASE_KEY') && !isMock ? '✓ key present' : '✗ missing — running in mock mode'}`);
+  console.log(`  FIRECRAWL : ${has('FIRECRAWL_API_KEY') ? '✓ key present, internet scraping enabled' : '✗ key missing, will use database only'}`);
+  console.log(`  APIFY     : ${has('APIFY_API_KEY') ? '✓ key present, LinkedIn matching enabled' : '✗ key missing, mock managers will be used'}`);
+  console.log(`  RESEND    : ${has('RESEND_API_KEY') ? '✓ key present, email sending enabled' : '✗ key missing, emails will be blocked'}`);
+  console.log(`  GROQ      : ${has('GROQ_API_KEY') ? '✓ key present, intent parsing enabled' : '✗ key missing, natural search disabled'}`);
+  console.log('  (Visit /api/health to verify each key actually works)');
+  console.log('────────────────────────────────────────────────────────\n');
+};
 
 const getPersistedSchedule = async () => {
   if (isMock) return DEFAULT_AUTO_PULL_SCHEDULE;
-  const settings = await supabase
-    .from('settings')
-    .select('auto_pull_schedule')
-    .eq('id', 1)
-    .limit(1)
-    .maybeSingle();
-  if (settings.error) return DEFAULT_AUTO_PULL_SCHEDULE;
-  return normalizeAutoPullSchedule(settings.data?.auto_pull_schedule || DEFAULT_AUTO_PULL_SCHEDULE);
+  try {
+    const settings = await supabase
+      .from('settings')
+      .select('auto_pull_schedule')
+      .eq('id', 1)
+      .limit(1)
+      .maybeSingle();
+    if (settings.error) return DEFAULT_AUTO_PULL_SCHEDULE;
+    return normalizeAutoPullSchedule(settings.data?.auto_pull_schedule || DEFAULT_AUTO_PULL_SCHEDULE);
+  } catch {
+    return DEFAULT_AUTO_PULL_SCHEDULE;
+  }
 };
 
 const triggerAutoPull = async () => {
@@ -54,23 +66,6 @@ const triggerAutoPull = async () => {
   }
 };
 
-const diagnoseDatabaseValues = async () => {
-  if (isMock || !supabase) return;
-  try {
-    const { data: sample } = await supabase.from('leads').select('city, function').limit(50);
-    console.log('Sample city and function values:', sample);
-
-    const { data: citiesRaw } = await supabase.from('leads').select('city');
-    const { data: functionsRaw } = await supabase.from('leads').select('function');
-    const uniqueCities = [...new Set((citiesRaw || []).map((r) => r.city))].filter(Boolean);
-    const uniqueFunctions = [...new Set((functionsRaw || []).map((r) => r.function))].filter(Boolean);
-    console.log('All unique cities in DB:', uniqueCities);
-    console.log('All unique functions in DB:', uniqueFunctions);
-  } catch (err) {
-    console.error('Diagnostics failed:', err.message);
-  }
-};
-
 const boot = async () => {
   setAutoPullRunner(triggerAutoPull);
   const schedule = await getPersistedSchedule();
@@ -78,8 +73,11 @@ const boot = async () => {
 
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    diagnoseDatabaseValues();
+    logApiKeyStatus();
   });
 };
 
-boot();
+boot().catch((err) => {
+  console.error('Server failed to start:', err.message);
+  process.exit(1);
+});

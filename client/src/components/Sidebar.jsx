@@ -25,6 +25,14 @@ const MODE_OPTIONS = [
 const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const fmt = (value) => new Intl.NumberFormat().format(Number(value || 0));
 
+const SERVICE_LABELS = [
+  { key: 'supabase',  label: 'Supabase',  note: 'database' },
+  { key: 'firecrawl', label: 'Firecrawl', note: 'internet scraping' },
+  { key: 'apify',     label: 'Apify',     note: 'LinkedIn matching' },
+  { key: 'resend',    label: 'Resend',    note: 'email sending' },
+  { key: 'groq',      label: 'Groq',      note: 'intent parsing' },
+];
+
 const Sidebar = ({
   activeTab,
   setActiveTab,
@@ -34,6 +42,7 @@ const Sidebar = ({
   autoPullSchedule,
   nextAutoPullAt,
   onAutoPullScheduleChange,
+  apiStatus,
 }) => {
   const mode = useMemo(() => {
     if (autoPullSchedule?.type === 'interval') return 'interval';
@@ -154,6 +163,21 @@ const Sidebar = ({
             : 'Next run: Auto pull is off'}
         </div>
       </div>
+    </div>
+
+    <div className="sidebar-sep" />
+    <div className="sidebar-label">Services</div>
+    <div className="api-status-list">
+      {SERVICE_LABELS.map(({ key, label, note }) => {
+        const connected = apiStatus ? Boolean(apiStatus[key]) : null;
+        return (
+          <div key={key} className="api-status-row" title={connected === null ? 'Checking…' : connected ? `${note} active` : `Add ${label.toUpperCase()}_API_KEY to enable ${note}`}>
+            <span className={`api-dot ${connected === null ? 'unknown' : connected ? 'on' : 'off'}`} />
+            <span className="api-label">{label}</span>
+            <span className="api-state">{connected === null ? '…' : connected ? 'on' : 'off'}</span>
+          </div>
+        );
+      })}
     </div>
 
     <div className="sidebar-foot">

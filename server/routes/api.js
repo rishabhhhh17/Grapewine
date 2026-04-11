@@ -816,6 +816,106 @@ const ensureQueueRunner = () => {
   }, EMAIL_INTERVAL_MS);
 };
 
+// ── Health check with real service verification ───────────────────────────
+let healthCache = null;
+let healthCacheAt = 0;
+const HEALTH_CACHE_MS = 5 * 60 * 1000; // re-verify every 5 minutes
+
+const verifyServices = async () => {
+  const results = {};
+
+  // Supabase — try a real query
+  if (!isMock && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
+    try {
+      const { error } = await supabase.from('leads').select('id').limit(1);
+      results.supabase = !error;
+    } catch {
+      results.supabase = false;
+    }
+  } else {
+    results.supabase = false;
+  }
+
+  // Firecrawl — hit the crawl-status endpoint (no credit cost)
+  if (process.env.FIRECRAWL_API_KEY) {
+    try {
+      const r = await fetch('https://api.firecrawl.dev/v1/team/usage', {
+        headers: { Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      results.firecrawl = r.ok;
+    } catch {
+      results.firecrawl = false;
+    }
+  } else {
+    results.firecrawl = false;
+  }
+
+  // Apify — lightweight user-info call
+  if (process.env.APIFY_API_KEY) {
+    try {
+      const r = await fetch(`https://api.apify.com/v2/users/me?token=${process.env.APIFY_API_KEY}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      results.apify = r.ok;
+    } catch {
+      results.apify = false;
+    }
+  } else {
+    results.apify = false;
+  }
+
+  // Resend — list domains (zero-cost read)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const r = await fetch('https://api.resend.com/domains', {
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      results.resend = r.ok;
+    } catch {
+      results.resend = false;
+    }
+  } else {
+    results.resend = false;
+  }
+
+  // Groq — list models (zero-cost, instant)
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const r = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      results.groq = r.ok;
+    } catch {
+      results.groq = false;
+    }
+  } else {
+    results.groq = false;
+  }
+
+  return results;
+};
+
+router.get('/health', async (req, res) => {
+  const now = Date.now();
+  const forceRefresh = req.query.refresh === 'true';
+
+  if (!forceRefresh && healthCache && (now - healthCacheAt) < HEALTH_CACHE_MS) {
+    return res.json({ status: 'ok', services: healthCache, isMock, cached: true });
+  }
+
+  try {
+    const services = await verifyServices();
+    healthCache = services;
+    healthCacheAt = Date.now();
+    return res.json({ status: 'ok', services, isMock, cached: false });
+  } catch (err) {
+    return res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 router.get('/manual-pull/stream', (req, res) => {
   const { sessionId } = req.query;
   if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
