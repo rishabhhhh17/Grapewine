@@ -1450,6 +1450,31 @@ a {
   transform: translateY(-1px);
 }
 
+.kb-card[draggable='true'] {
+  cursor: grab;
+}
+
+.kb-card[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.kb-dragging {
+  opacity: 0.4;
+  transform: scale(0.97);
+}
+
+.kb-col-over {
+  border-color: var(--c) !important;
+  background: rgba(96, 165, 250, 0.04) !important;
+}
+
+.kb-empty-over {
+  color: var(--c);
+  border: 1px dashed var(--c);
+  border-radius: 6px;
+  padding: 16px;
+}
+
 .kb-name {
   font-size: 14px;
   font-weight: 600;

@@ -1,4 +1,5 @@
 /* eslint-disable react/prop-types */
+import { useState } from 'react';
 
 const COLS = ['Found', 'Selected', 'Email Sent', 'Replied', 'Onboarded to Tal'];
 
@@ -21,31 +22,76 @@ const scoreStyle = (score) => (
 const stageOf = (lead) => lead.pipeline_stage || lead.status || 'Found';
 
 const PipelineTab = ({ leads, onStatusChange }) => {
+  const [dragOverCol, setDragOverCol] = useState(null);
+  const [draggingId, setDraggingId] = useState(null);
+
   const getLeads = (col) => leads.filter((lead) => stageOf(lead) === col);
+
+  const handleDragStart = (event, lead) => {
+    setDraggingId(lead.id);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('leadId', String(lead.id));
+    event.dataTransfer.setData('fromStage', stageOf(lead));
+  };
+
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+
+  const handleDragOver = (event, col) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDragOverCol(col);
+  };
+
+  const handleDrop = async (event, toStage) => {
+    event.preventDefault();
+    const leadId = event.dataTransfer.getData('leadId');
+    const fromStage = event.dataTransfer.getData('fromStage');
+    setDragOverCol(null);
+    setDraggingId(null);
+    if (!leadId || fromStage === toStage) return;
+    await onStatusChange(leadId, toStage);
+  };
 
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">Pipeline</h1>
-        <p className="page-subtitle">Read-only pipeline. Lead stages move automatically from app actions.</p>
+        <p className="page-subtitle">Drag cards between columns to move leads through stages.</p>
         <hr className="header-line" />
       </div>
 
       <div className="kanban">
         {COLS.map((col) => {
           const colLeads = getLeads(col);
+          const isOver = dragOverCol === col;
           return (
-            <div key={col} className="kb-col">
+            <div
+              key={col}
+              className={`kb-col ${isOver ? 'kb-col-over' : ''}`}
+              onDragOver={(event) => handleDragOver(event, col)}
+              onDragLeave={() => setDragOverCol(null)}
+              onDrop={(event) => handleDrop(event, col)}
+            >
               <div className="kb-col-hd">
                 <span className="kb-col-name" style={{ color: COL_COLOR[col] }}>{col}</span>
                 <span className="kb-badge">{colLeads.length}</span>
               </div>
               {colLeads.length === 0
-                ? <div className="kb-empty">No leads in this stage</div>
+                ? (
+                  <div className={`kb-empty ${isOver ? 'kb-empty-over' : ''}`}>
+                    {isOver ? 'Drop here' : 'No leads in this stage'}
+                  </div>
+                )
                 : colLeads.map((lead) => (
                   <div
                     key={lead.id}
-                    className="kb-card"
+                    className={`kb-card ${draggingId === lead.id ? 'kb-dragging' : ''}`}
+                    draggable
+                    onDragStart={(event) => handleDragStart(event, lead)}
+                    onDragEnd={handleDragEnd}
                   >
                     <div className="kb-name">{lead.name}</div>
                     <div className="kb-ttl">{lead.title}</div>
