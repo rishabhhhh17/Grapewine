@@ -19,7 +19,6 @@ const SearchPanel = ({
   onSearchDatabase,
   onSearchInternet,
   onManualPull,
-  searchSource,
   onFilterChange,
   apiStatus,
 }) => {
@@ -97,7 +96,7 @@ const SearchPanel = ({
                 setSearch(next);
                 syncFilters({ ...filters, search: next });
               }}
-              placeholder={searchSource === 'database' ? 'Searching your saved database' : 'Search name, company, title, city, function'}
+              placeholder={`Search your ${leadCountLabel}`}
             />
           </div>
           <div className="filter-dropdown-wrap">

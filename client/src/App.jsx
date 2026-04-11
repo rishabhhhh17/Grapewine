@@ -371,7 +371,25 @@ function App() {
     return `${new Intl.NumberFormat().format(total)} saved leads`;
   }, [leads.length, stats?.totalLeads]);
 
+  const modeBanner = (() => {
+    if (!apiStatus) return null;
+    const allOn = apiStatus.supabase && apiStatus.firecrawl && apiStatus.apify && apiStatus.resend && apiStatus.groq;
+    if (allOn) return { text: 'Fully configured. All features active.', cls: 'mode-banner full' };
+    const missing = [];
+    if (!apiStatus.firecrawl) missing.push('internet scraping');
+    if (!apiStatus.resend) missing.push('email sending');
+    if (!apiStatus.apify) missing.push('LinkedIn matching');
+    if (!apiStatus.groq) missing.push('intent parsing');
+    if (missing.length === 0) return null;
+    return {
+      text: `Running in Database Mode. ${missing.map((m) => m.charAt(0).toUpperCase() + m.slice(1)).join(', ')} require${missing.length === 1 ? 's' : ''} API keys.`,
+      cls: 'mode-banner partial',
+    };
+  })();
+
   return (
+    <>
+    {modeBanner && <div className={modeBanner.cls}>{modeBanner.text}</div>}
     <div className="app-layout">
       <Sidebar
         activeTab={activeTab}
@@ -428,6 +446,7 @@ function App() {
       </main>
       {toast && <div className="toast">{toast}</div>}
     </div>
+    </>
   );
 }
 

@@ -186,7 +186,6 @@ const Dashboard = ({
         onSearchDatabase={onSearchDatabase}
         onSearchInternet={onSearchInternet}
         onManualPull={onManualPull}
-        searchSource={searchMeta?.source}
         onFilterChange={onFilterChange}
         apiStatus={apiStatus}
       />
@@ -421,6 +420,7 @@ const Dashboard = ({
 
       <EmailPreviewPanel
         lead={preview}
+        apiStatus={apiStatus}
         onClose={() => setPreview(null)}
         onEmailSent={async (id) => {
           await onSendEmail(id);

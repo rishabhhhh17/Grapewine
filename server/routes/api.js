@@ -1037,16 +1037,15 @@ router.post('/search', async (req, res) => {
 });
 
 router.post('/manual-pull', async (req, res) => {
-  const role = req.body.role || req.body.function;
-  const city = req.body.city;
+  const rawRole = req.body.role || req.body.function;
+  const rawCity = req.body.city;
+  // Treat 'all' or blank as "no filter" — internet pipeline handles null gracefully
+  const role = (rawRole && rawRole !== 'all') ? rawRole : null;
+  const city = (rawCity && rawCity !== 'all') ? rawCity : null;
   const sources = Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : DEFAULT_SOURCES;
   const strictHiringManager = Boolean(req.body.strictHiringManager);
   const count = Math.max(10, Math.min(500, Number(req.body.count || 50)));
   const sessionId = req.body.sessionId || randomUUID();
-
-  if (!role || !city) {
-    return res.status(400).json({ success: false, message: 'role and city are required' });
-  }
 
   const push = (payload) => emitManualEvent(sessionId, 'log', { at: nowIso(), ...payload });
   push({ message: `Manual pull started for ${role} in ${city} (${count} leads)`, sources });
@@ -1224,6 +1223,10 @@ router.get('/stats', async (req, res) => {
     let replied = isMock ? stageCount('Replied') : 0;
     let onboarded = isMock ? stageCount('Onboarded to Tal') : 0;
     let emailed = isMock ? 0 : stageCount('Email Sent');
+    let averageScore = isMock
+      ? (source.length ? Math.round(source.reduce((s, l) => s + Number(l.activity_score || 0), 0) / source.length) : 0)
+      : 0;
+
     if (!isMock) {
       totalLeads = (await fetchFilteredLeads({ page: 1, limit: 1 })).total;
       selected = (await fetchFilteredLeads({ page: 1, limit: 1, stage: 'Selected' })).total;
@@ -1239,6 +1242,16 @@ router.get('/stats', async (req, res) => {
       } else {
         emailed = 0;
       }
+
+      // Average activity_score across all non-blacklisted leads
+      const { data: scoreRows } = await supabase
+        .from('leads')
+        .select('activity_score')
+        .or('is_blacklisted.is.null,is_blacklisted.eq.false');
+      if (scoreRows && scoreRows.length) {
+        const total = scoreRows.reduce((s, r) => s + Number(r.activity_score || 0), 0);
+        averageScore = Math.round(total / scoreRows.length);
+      }
     }
     const autoPullEnabled = isMock ? mockSettings.auto_pull_enabled : Boolean(settings?.auto_pull_enabled);
     const lastAutoPull = isMock ? mockSettings.last_auto_pull : (settings?.last_auto_pull || null);
@@ -1251,6 +1264,7 @@ router.get('/stats', async (req, res) => {
       emailed,
       replied,
       onboarded,
+      averageScore,
       isMock,
       lastScrapeTime: isMock ? lastScrape : lastScrape?.completed_at || null,
       databaseHealth: 'healthy',
