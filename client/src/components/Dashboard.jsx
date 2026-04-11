@@ -54,6 +54,7 @@ const Dashboard = ({
   onBlacklist,
   onStageChange,
   apiStatus,
+  isDemoMode,
 }) => {
   const [selected, setSelected] = useState(new Set());
   const [preview, setPreview] = useState(null);
@@ -421,6 +422,7 @@ const Dashboard = ({
       <EmailPreviewPanel
         lead={preview}
         apiStatus={apiStatus}
+        isDemoMode={isDemoMode}
         onClose={() => setPreview(null)}
         onEmailSent={async (id) => {
           await onSendEmail(id);

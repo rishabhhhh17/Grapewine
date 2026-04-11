@@ -21,11 +21,21 @@ app.use('/api', apiRoutes);
 const logApiKeyStatus = () => {
   const has = (key) => Boolean(process.env[key]);
   console.log('\n── Grape Hiring Manager Engine ─────────────────────────');
-  console.log(`  SUPABASE  : ${has('SUPABASE_URL') && has('SUPABASE_KEY') && !isMock ? '✓ key present' : '✗ missing — running in mock mode'}`);
-  console.log(`  FIRECRAWL : ${has('FIRECRAWL_API_KEY') ? '✓ key present, internet scraping enabled' : '✗ key missing, will use database only'}`);
-  console.log(`  APIFY     : ${has('APIFY_API_KEY') ? '✓ key present, LinkedIn matching enabled' : '✗ key missing, mock managers will be used'}`);
-  console.log(`  RESEND    : ${has('RESEND_API_KEY') ? '✓ key present, email sending enabled' : '✗ key missing, emails will be blocked'}`);
-  console.log(`  GROQ      : ${has('GROQ_API_KEY') ? '✓ key present, intent parsing enabled' : '✗ key missing, natural search disabled'}`);
+  console.log(has('SUPABASE_URL') && has('SUPABASE_KEY') && !isMock
+    ? '  ✅ Supabase  : connected'
+    : '  ❌ Supabase  : missing key — running in mock mode');
+  console.log(has('FIRECRAWL_API_KEY')
+    ? '  ✅ Firecrawl : ready — internet scraping enabled'
+    : '  ❌ Firecrawl : missing key — internet scraping disabled');
+  console.log(has('APIFY_API_KEY')
+    ? '  ✅ Apify     : ready — LinkedIn matching enabled'
+    : '  ❌ Apify     : missing key — LinkedIn matching disabled');
+  console.log(has('RESEND_API_KEY')
+    ? '  ✅ Resend    : ready — email sending enabled'
+    : '  ❌ Resend    : missing key — email sending disabled');
+  console.log(has('GROQ_API_KEY')
+    ? '  ✅ Groq      : ready — intent parsing enabled'
+    : '  ❌ Groq      : missing key — natural search disabled');
   console.log('  (Visit /api/health to verify each key actually works)');
   console.log('────────────────────────────────────────────────────────\n');
 };

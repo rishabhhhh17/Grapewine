@@ -828,27 +828,27 @@ const verifyServices = async () => {
   if (!isMock && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
     try {
       const { error } = await supabase.from('leads').select('id').limit(1);
-      results.supabase = !error;
+      results.supabase = error ? 'error' : 'connected';
     } catch {
-      results.supabase = false;
+      results.supabase = 'error';
     }
   } else {
-    results.supabase = false;
+    results.supabase = isMock ? 'mock' : 'not configured';
   }
 
-  // Firecrawl — hit the crawl-status endpoint (no credit cost)
+  // Firecrawl — hit the team-usage endpoint (no credit cost)
   if (process.env.FIRECRAWL_API_KEY) {
     try {
       const r = await fetch('https://api.firecrawl.dev/v1/team/usage', {
         headers: { Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}` },
         signal: AbortSignal.timeout(8000),
       });
-      results.firecrawl = r.ok;
+      results.firecrawl = r.ok ? 'ready' : 'error';
     } catch {
-      results.firecrawl = false;
+      results.firecrawl = 'error';
     }
   } else {
-    results.firecrawl = false;
+    results.firecrawl = 'not configured';
   }
 
   // Apify — lightweight user-info call
@@ -857,12 +857,12 @@ const verifyServices = async () => {
       const r = await fetch(`https://api.apify.com/v2/users/me?token=${process.env.APIFY_API_KEY}`, {
         signal: AbortSignal.timeout(8000),
       });
-      results.apify = r.ok;
+      results.apify = r.ok ? 'ready' : 'error';
     } catch {
-      results.apify = false;
+      results.apify = 'error';
     }
   } else {
-    results.apify = false;
+    results.apify = 'not configured';
   }
 
   // Resend — list domains (zero-cost read)
@@ -872,12 +872,12 @@ const verifyServices = async () => {
         headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
         signal: AbortSignal.timeout(8000),
       });
-      results.resend = r.ok;
+      results.resend = r.ok ? 'ready' : 'error';
     } catch {
-      results.resend = false;
+      results.resend = 'error';
     }
   } else {
-    results.resend = false;
+    results.resend = 'not configured';
   }
 
   // Groq — list models (zero-cost, instant)
@@ -887,12 +887,12 @@ const verifyServices = async () => {
         headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
         signal: AbortSignal.timeout(8000),
       });
-      results.groq = r.ok;
+      results.groq = r.ok ? 'ready' : 'error';
     } catch {
-      results.groq = false;
+      results.groq = 'error';
     }
   } else {
-    results.groq = false;
+    results.groq = 'not configured';
   }
 
   return results;
@@ -910,7 +910,11 @@ router.get('/health', async (req, res) => {
     const services = await verifyServices();
     healthCache = services;
     healthCacheAt = Date.now();
-    return res.json({ status: 'ok', services, isMock, cached: false });
+    const allReady = ['firecrawl', 'apify', 'resend', 'groq'].every((k) => services[k] === 'ready');
+    const mode = (services.supabase === 'connected' || services.supabase === 'mock') && allReady
+      ? 'fully configured'
+      : 'partially configured';
+    return res.json({ status: 'ok', services, isMock, cached: false, mode });
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.message });
   }

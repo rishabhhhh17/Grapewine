@@ -22,7 +22,7 @@ const SearchPanel = ({
   onFilterChange,
   apiStatus,
 }) => {
-  const internetEnabled = !apiStatus || apiStatus.firecrawl !== false;
+  const internetEnabled = !apiStatus || apiStatus.firecrawl === 'ready';
   const internetTitle = internetEnabled ? undefined : 'Add FIRECRAWL_API_KEY to enable internet scraping';
   const [role, setRole] = useState('all');
   const [city, setCity] = useState('all');

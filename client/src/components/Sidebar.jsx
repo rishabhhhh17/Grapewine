@@ -169,12 +169,17 @@ const Sidebar = ({
     <div className="sidebar-label">Services</div>
     <div className="api-status-list">
       {SERVICE_LABELS.map(({ key, label, note }) => {
-        const connected = apiStatus ? Boolean(apiStatus[key]) : null;
+        const val = apiStatus ? apiStatus[key] : null;
+        const isOn = val === 'connected' || val === 'ready' || val === 'mock';
+        const isOff = val === 'not configured' || val === 'error';
+        const dotClass = val === null ? 'unknown' : isOn ? 'on' : 'off';
+        const stateText = val === null ? '…' : isOn ? val : 'off';
+        const titleText = val === null ? 'Checking…' : isOn ? `${note} active` : `Add ${label.toUpperCase().replace(' ', '_')}_API_KEY to enable ${note}`;
         return (
-          <div key={key} className="api-status-row" title={connected === null ? 'Checking…' : connected ? `${note} active` : `Add ${label.toUpperCase()}_API_KEY to enable ${note}`}>
-            <span className={`api-dot ${connected === null ? 'unknown' : connected ? 'on' : 'off'}`} />
+          <div key={key} className="api-status-row" title={titleText}>
+            <span className={`api-dot ${dotClass}`} />
             <span className="api-label">{label}</span>
-            <span className="api-state">{connected === null ? '…' : connected ? 'on' : 'off'}</span>
+            <span className="api-state">{stateText}</span>
           </div>
         );
       })}

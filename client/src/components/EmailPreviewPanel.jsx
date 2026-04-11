@@ -1,7 +1,7 @@
 /* eslint-disable react/prop-types */
 import { useEffect, useState } from 'react';
 
-const EmailPreviewPanel = ({ lead, onClose, onEmailSent, apiStatus }) => {
+const EmailPreviewPanel = ({ lead, onClose, onEmailSent, apiStatus, isDemoMode }) => {
   const [sending, setSending] = useState(false);
   const [body, setBody] = useState('');
   const [copied, setCopied] = useState(false);
@@ -80,8 +80,8 @@ const EmailPreviewPanel = ({ lead, onClose, onEmailSent, apiStatus }) => {
                 <button
                   className="btn-send"
                   onClick={send}
-                  disabled={sending || apiStatus?.resend === false}
-                  title={apiStatus?.resend === false ? 'Add RESEND_API_KEY to enable email sending' : undefined}
+                  disabled={sending || isDemoMode || (apiStatus && apiStatus.resend !== 'ready')}
+                  title={isDemoMode ? 'Demo Mode: Email sending disabled. Exit demo to use real APIs.' : (apiStatus && apiStatus.resend !== 'ready' ? 'Add RESEND_API_KEY to enable email sending' : undefined)}
                 >
                   {sending ? 'Sending…' : 'Send Email'}
                 </button>
