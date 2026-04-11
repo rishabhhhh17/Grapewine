@@ -836,10 +836,10 @@ const verifyServices = async () => {
     results.supabase = isMock ? 'mock' : 'not configured';
   }
 
-  // Firecrawl — hit the team-usage endpoint (no credit cost)
+  // Firecrawl — root ping (no credit cost, always returns 200 + JSON if key is valid)
   if (process.env.FIRECRAWL_API_KEY) {
     try {
-      const r = await fetch('https://api.firecrawl.dev/v1/team/usage', {
+      const r = await fetch('https://api.firecrawl.dev/', {
         headers: { Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}` },
         signal: AbortSignal.timeout(8000),
       });
@@ -865,14 +865,20 @@ const verifyServices = async () => {
     results.apify = 'not configured';
   }
 
-  // Resend — list domains (zero-cost read)
+  // Resend — send-only keys return 401 with "restricted_api_key" which still means the key is valid
   if (process.env.RESEND_API_KEY) {
     try {
       const r = await fetch('https://api.resend.com/domains', {
         headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
         signal: AbortSignal.timeout(8000),
       });
-      results.resend = r.ok ? 'ready' : 'error';
+      if (r.ok) {
+        results.resend = 'ready';
+      } else {
+        const body = await r.json().catch(() => ({}));
+        // "restricted_api_key" means the key is valid but send-only — that's fine
+        results.resend = body?.name === 'restricted_api_key' ? 'ready' : 'error';
+      }
     } catch {
       results.resend = 'error';
     }
