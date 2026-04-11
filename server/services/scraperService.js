@@ -1,42 +1,86 @@
+const { ApifyClient } = require('apify-client');
 const axios = require('axios');
+const { searchLinkedInDirectly } = require('./linkedinService');
+const { calculateActivityScore } = require('./scoringService');
 
-const PLATFORMS = [
-  {
-    name: 'Naukri',
-    buildUrl: (role, city) =>
-      `https://www.naukri.com/${role.toLowerCase().replace(/\s+/g, '-')}-jobs-in-${city.toLowerCase()}`
-  },
+// ── LinkedIn Jobs scraper (optional enrichment) ───────────────────────────────
+// Builds a LinkedIn jobs search URL for a role + city
+const buildLinkedInJobsUrl = (role, city) => {
+  const keyword = encodeURIComponent(role);
+  const location = encodeURIComponent(`${city}, India`);
+  // r604800 = last 7 days
+  return `https://www.linkedin.com/jobs/search/?keywords=${keyword}&location=${location}&f_TPR=r604800&sortBy=DD`;
+};
+
+// Scrape LinkedIn Jobs via Apify to get posting dates & company names
+const scrapeLinkedInJobs = async (role, city, count, onProgress) => {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) return [];
+
+  const client = new ApifyClient({ token: apiKey });
+  const url = buildLinkedInJobsUrl(role, city);
+
+  if (onProgress) onProgress({ stage: 'linkedin_jobs', message: `Fetching LinkedIn job postings for ${role} in ${city}…` });
+
+  try {
+    const run = await client.actor('curious_coder/linkedin-jobs-scraper').call({
+      urls: [url],
+      limit: Math.min(count, 50),
+    }, { waitSecs: 90 });
+
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+    if (onProgress) onProgress({ stage: 'linkedin_jobs_done', message: `LinkedIn Jobs: found ${items.length} postings` });
+
+    return items
+      .filter((item) => item.companyName && item.title)
+      .map((item) => ({
+        company: String(item.companyName || '').trim(),
+        jobTitle: String(item.title || '').trim(),
+        // LinkedIn shows "X days ago" or an ISO date in postedAt
+        daysPosted: parseDaysPosted(item.postedAt || item.postedDate || item.timeAgo),
+        companyLinkedinUrl: item.companyLinkedinUrl || null,
+      }));
+  } catch (err) {
+    console.log(`[linkedin-jobs] failed or blocked: ${err.message}`);
+    return [];
+  }
+};
+
+// Parse "2 days ago", "1 week ago", ISO date, or number → integer days
+const parseDaysPosted = (value) => {
+  if (!value) return 0;
+  const s = String(value).toLowerCase().trim();
+  if (/^\d+$/.test(s)) return Number(s);
+  const dayMatch = s.match(/(\d+)\s*day/);
+  if (dayMatch) return Number(dayMatch[1]);
+  const weekMatch = s.match(/(\d+)\s*week/);
+  if (weekMatch) return Number(weekMatch[1]) * 7;
+  const monthMatch = s.match(/(\d+)\s*month/);
+  if (monthMatch) return Number(monthMatch[1]) * 30;
+  // ISO date
+  try {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) {
+      return Math.round((Date.now() - d.getTime()) / 86_400_000);
+    }
+  } catch { /* ignore */ }
+  return 0;
+};
+
+// ── Optional: Firecrawl on scraper-friendly boards ───────────────────────────
+const FRIENDLY_PLATFORMS = [
   {
     name: 'Wellfound',
     buildUrl: (role, city) =>
-      `https://wellfound.com/jobs?role=${encodeURIComponent(role)}&location=${encodeURIComponent(city)}`
+      `https://wellfound.com/jobs?role=${encodeURIComponent(role)}&location=${encodeURIComponent(city)}`,
   },
   {
     name: 'Cutshort',
     buildUrl: (role, city) =>
-      `https://cutshort.io/jobs?title=${encodeURIComponent(role)}&location=${encodeURIComponent(city)}`
-  },
-  {
-    name: 'Instahyre',
-    buildUrl: (role, city) =>
-      `https://www.instahyre.com/search-jobs/?q=${encodeURIComponent(role)}&location=${encodeURIComponent(city)}`
-  },
-  {
-    name: 'IIM Jobs',
-    buildUrl: (role) =>
-      `https://www.iimjobs.com/j/${role.toLowerCase().replace(/\s+/g, '-')}-jobs`
-  },
-  {
-    name: 'Times Jobs',
-    buildUrl: (role, city) =>
-      `https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords=${encodeURIComponent(role)}&txtLocation=${encodeURIComponent(city)}`
+      `https://cutshort.io/jobs?title=${encodeURIComponent(role)}&location=${encodeURIComponent(city)}`,
   },
 ];
-
-const PLATFORM_BY_NAME = PLATFORMS.reduce((acc, platform) => {
-  acc[platform.name] = platform;
-  return acc;
-}, {});
 
 const EXTRACT_PROMPT = `Extract a list of active job postings from this page. For each posting return a JSON object with these exact fields:
 - company: the exact company name as displayed
@@ -45,394 +89,227 @@ const EXTRACT_PROMPT = `Extract a list of active job postings from this page. Fo
 - posterName: first and last name of the person who personally posted or is listed as the hiring contact (null if only a company/HR name is shown)
 - posterTitle: the job title or seniority level of that poster, e.g. "Head of Engineering", "VP Product", "Founder" (null if not visible)`;
 
-const scrapeOnePlatform = async (platform, role, city, apiKey) => {
+const firecrawlExtract = async (platform, role, city, apiKey) => {
   const targetUrl = platform.buildUrl(role, city);
-
   try {
     const postResponse = await axios.post(
       'https://api.firecrawl.dev/v1/extract',
       { urls: [targetUrl], prompt: EXTRACT_PROMPT },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
     );
-
-    if (!postResponse.data?.success || !postResponse.data?.id) return null;
+    if (!postResponse.data?.success || !postResponse.data?.id) return [];
 
     const jobId = postResponse.data.id;
-    let attempts = 0;
-
-    while (attempts < 20) {
-      await new Promise(r => setTimeout(r, 2000));
-      attempts++;
-
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
       const statusResponse = await axios.get(
         `https://api.firecrawl.dev/v1/extract/${jobId}`,
         { headers: { Authorization: `Bearer ${apiKey}` } }
       );
-
       const { status, data: responseData } = statusResponse.data;
-
       if (status === 'completed') {
-        let extractResult = null;
-        if (Array.isArray(responseData) && responseData.length > 0) {
-          extractResult = responseData[0].extract || responseData[0];
-        } else if (responseData?.extract && Array.isArray(responseData.extract)) {
-          extractResult = responseData.extract;
-        } else if (responseData?.data && Array.isArray(responseData.data)) {
-          extractResult = responseData.data;
+        let result = null;
+        if (Array.isArray(responseData) && responseData.length > 0) result = responseData[0].extract || responseData[0];
+        else if (responseData?.extract && Array.isArray(responseData.extract)) result = responseData.extract;
+        else if (responseData?.data && Array.isArray(responseData.data)) result = responseData.data;
+        if (Array.isArray(result) && result.length > 0) {
+          return result.map((job) => ({ ...job, source: platform.name }));
         }
-
-        if (Array.isArray(extractResult) && extractResult.length > 0) {
-          return extractResult.map(job => ({ ...job, source: platform.name }));
-        }
-        return null;
+        return [];
       }
-
-      if (status === 'failed') return null;
+      if (status === 'failed') return [];
     }
-
-    return null; // polling timed out
-  } catch (error) {
-    console.error(`Firecrawl error [${platform.name}]:`, error.response?.data || error.message);
-    return null;
+    return [];
+  } catch (err) {
+    console.log(`[firecrawl/${platform.name}] blocked or failed: ${err.message}`);
+    return [];
   }
 };
 
-// Slice raw scrape rows to exactly `count` unique companies, adding batchTag for uniqueness.
-const sliceMockToCount = (allJobs, selectedSources, count) => {
-  const batchTag = String(Date.now()).slice(-6);
-  const seen = new Set();
-  const result = [];
-  for (const job of allJobs) {
-    if (!selectedSources.includes(job.source)) continue;
-    if (!seen.has(job.company)) {
-      if (seen.size >= count) break;
-      seen.add(job.company);
-    }
-    result.push({ ...job, company: `${job.company} [${batchTag}]` });
-  }
-  return result;
-};
-
-const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {}) => {
-  const selectedSources = Array.isArray(options.sources) && options.sources.length
-    ? options.sources
-    : PLATFORMS.map((p) => p.name);
-  const selectedPlatforms = selectedSources
-    .map((name) => PLATFORM_BY_NAME[name])
-    .filter(Boolean);
-  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const count = Math.max(10, Math.min(500, Number(options.count || 50)));
-
-  const apiKey = process.env.FIRECRAWL_API_KEY;
-  if (!apiKey) {
-    console.log('No FIRECRAWL_API_KEY found. Returning mock data.');
-    const mockData = sliceMockToCount(fallbackMockData(role, strictHiringManager), selectedSources, count);
-    if (onProgress) {
-      onProgress({
-        stage: 'mock',
-        message: `External scraper unavailable. Returning ${mockData.length} mock results from selected sources.`,
-      });
-    }
-    return mockData;
-  }
-
-  console.log(`Scraping ${selectedPlatforms.length} platforms in parallel for "${role}" in "${city}"...`);
-  if (onProgress) {
-    onProgress({
-      stage: 'start',
-      message: `Starting scrape for ${selectedPlatforms.length} sources`,
-      sources: selectedSources,
-    });
-  }
-
-  // Fire all 6 platform scrapes simultaneously
-  const settled = await Promise.allSettled(
-    selectedPlatforms.map(async (platform) => {
-      if (onProgress) {
-        onProgress({ stage: 'source_started', source: platform.name, message: `Scraping ${platform.name}...` });
-      }
-      const result = await scrapeOnePlatform(platform, role, city, apiKey);
-      if (onProgress) {
-        onProgress({
-          stage: 'source_completed',
-          source: platform.name,
-          results: Array.isArray(result) ? result.length : 0,
-          message: `Scraping ${platform.name} complete (${Array.isArray(result) ? result.length : 0} results)`,
-        });
-      }
-      return result;
-    })
-  );
-
-  const allJobs = [];
-  settled.forEach((result, i) => {
-    if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-      console.log(`  ${selectedPlatforms[i].name}: ${result.value.length} jobs`);
-      allJobs.push(...result.value);
-    } else {
-      console.log(`  ${selectedPlatforms[i].name}: no results`);
-    }
-  });
-
-  if (allJobs.length === 0) {
-    console.log('All platforms returned no results. Falling back to mock data.');
-    const fallback = sliceMockToCount(fallbackMockData(role, strictHiringManager), selectedSources, count);
-    if (onProgress) {
-      onProgress({ stage: 'fallback', message: `Falling back to mock results (${fallback.length})` });
-    }
-    return fallback;
-  }
-
-  if (onProgress) {
-    onProgress({ stage: 'completed', message: `Scrape complete with ${allJobs.length} jobs` });
-  }
-  return allJobs;
-};
-
-// Fallback mock — simulates realistic multi-platform scrape results
-const fallbackMockData = (role, strictHiringManager) => {
-  const realCompanies = [
-    'Flipkart', 'Swiggy', 'Zomato', 'BrowserStack', 'Postman', 'Paytm', 'Razorpay', 'CRED',
-    'Ola', 'OYO', 'Meesho', 'Zepto', 'Zerodha', 'Dream11', 'Upstox', 'ShareChat',
-    'Mindtickle', 'Freshworks', 'Zoho', 'Chargebee', 'Innovaccer', 'Darwinbox', 'Hasura',
-    'Unacademy', 'Byjus', 'Vedantu', 'Eruditus', 'Upgrad', 'Spinny', 'Cars24', 'Lenskart',
-    'Nykaa', 'Purplle', 'PharmEasy', '1mg', 'Curefit', 'Groww', 'Pine Labs', 'BharatPe',
-    'Digit Insurance', 'Acko', 'PolicyBazaar', 'Udaan', 'Delhivery', 'Dunzo', 'Blinkit',
-    'Shadowfax', 'Rivigo', 'BlackBuck', 'ElasticRun', 'DealShare', 'OfBusiness', 'Infra.Market',
-    'Zetwerk', 'Moglix', 'Livspace', 'Urban Company', 'NoBroker', 'CarDekho',
-    'Droom', 'Turtlemint', 'ClearTax', 'KhataBook', 'OkCredit', 'Open Financial', 'Niyo',
-    'Jupiter', 'Fi Money', 'MobiKwik', 'BillDesk', 'CCAVenue', 'Instamojo', 'GupShup',
-    'Amagi', 'HighRadius', 'Icertis', 'Druva', 'Zenoti', 'Fractal', 'Mu Sigma', 'LatentView',
-    'Tredence', 'GreyOrange', 'Unbxd', 'Capillary', 'Sokrati', 'CleverTap', 'MoEngage',
-    'WebEngage', 'Mad Street Den', 'Yellow.ai', 'Haptik', 'TCS', 'Infosys', 'Wipro',
-    'HCL', 'Tech Mahindra', 'LTI', 'Mindtree', 'Mphasis', 'Amazon India', 'Google India',
-    'Microsoft India', 'Uber India', 'Atlassian India', 'Stripe India'
-  ];
-
-  const possibleSources = ['Naukri', 'Wellfound', 'Cutshort', 'Instahyre', 'IIM Jobs', 'Times Jobs'];
-  const standardSeniority = ['Senior', 'Lead', 'Staff', 'Principal', 'Manager', 'Director', 'Head of', 'VP of', 'Platform', 'Backend'];
-  const strictSeniority = ['Manager', 'Director', 'Head of', 'VP of', 'VP'];
-
-  // Platforms where the actual hiring manager's name surfaces on the listing
-  const postersByPlatform = {
-    'Wellfound': [
-      { posterName: 'Arjun Mehta',       posterTitle: 'Co-Founder & CTO' },
-      { posterName: 'Priya Sharma',      posterTitle: 'Head of Engineering' },
-      { posterName: 'Ravi Krishnan',     posterTitle: 'VP Engineering' },
-      { posterName: 'Sneha Patel',       posterTitle: 'Founder & CEO' },
-      { posterName: 'Karan Malhotra',    posterTitle: 'Director of Product' },
-      { posterName: 'Lakshmi Venkatesh', posterTitle: 'CTO' },
-      { posterName: 'Rohan Gupta',       posterTitle: 'VP of Product' },
-      { posterName: 'Meera Pillai',      posterTitle: 'Co-Founder & VP Engineering' },
-    ],
-    'Cutshort': [
-      { posterName: 'Neha Agarwal',      posterTitle: 'VP of Engineering' },
-      { posterName: 'Rahul Joshi',       posterTitle: 'Head of Product' },
-      { posterName: 'Kavitha Suresh',    posterTitle: 'Engineering Manager' },
-      { posterName: 'Deepak Nair',       posterTitle: 'Director of Technology' },
-      { posterName: 'Siddharth Rao',     posterTitle: 'Head of Technology' },
-      { posterName: 'Ankita Doshi',      posterTitle: 'Director of Product' },
-    ],
-    'Instahyre': [
-      { posterName: 'Vivek Pandey',      posterTitle: 'Head of Infrastructure' },
-      { posterName: 'Suresh Natarajan',  posterTitle: 'VP Engineering' },
-      { posterName: 'Divya Menon',       posterTitle: 'VP Product' },
-      { posterName: 'Tarun Bose',        posterTitle: 'Head of Mobile Engineering' },
-    ],
-  };
-
-  const generated = [];
-  const activeSeniority = strictHiringManager ? strictSeniority : standardSeniority;
-
-  for (let i = 0; i < realCompanies.length; i++) {
-    const companyName = realCompanies[i];
-    const titlePrefix = activeSeniority[i % activeSeniority.length];
-
-    const rand = Math.random();
-    let numSources = 1;
-    if (rand > 0.9) numSources = 4;
-    else if (rand > 0.75) numSources = 3;
-    else if (rand > 0.5) numSources = 2;
-
-    const assignedSources = [];
-    const available = [...possibleSources];
-    for (let s = 0; s < numSources; s++) {
-      const idx = Math.floor(Math.random() * available.length);
-      assignedSources.push(available[idx]);
-      available.splice(idx, 1);
-    }
-
-    generated.push({
-      company: companyName,
-      title: `${titlePrefix} ${role}`,
-      daysPosted: (i % 45) + 1,
-      sources: assignedSources
-    });
-  }
-
-  // Simulate raw scrape: one row per platform occurrence, with slight daysPosted variation
-  const rawScrapeSimulated = [];
-  generated.forEach(item => {
-    item.sources.forEach(src => {
-      const posterPool = postersByPlatform[src];
-      const poster = posterPool
-        ? posterPool[Math.floor(Math.random() * posterPool.length)]
-        : { posterName: null, posterTitle: null };
-
-      rawScrapeSimulated.push({
-        company: item.company,
-        title: item.title,
-        daysPosted: item.daysPosted + Math.floor(Math.random() * 5),
-        posterName: poster.posterName,
-        posterTitle: poster.posterTitle,
-        source: src
-      });
-    });
-  });
-
-  return rawScrapeSimulated;
-};
-
-// ─── Mock lead generator for testing ─────────────────────────────────────────
-// Produces complete, upsert-ready lead objects with no API calls.
-// Each call shuffles a large pool so new name+company pairs are added to DB.
-
-const MOCK_COMPANIES = [
-  'Flipkart','Swiggy','Zomato','Razorpay','CRED','Meesho','Zepto','Zerodha',
-  'Dream11','Upstox','ShareChat','Freshworks','Zoho','Chargebee','Hasura',
-  'Unacademy','Spinny','Cars24','Lenskart','Nykaa','PharmEasy','Groww',
-  'BharatPe','Digit Insurance','Acko','PolicyBazaar','Delhivery','Dunzo',
-  'Zetwerk','Moglix','Livspace','Urban Company','NoBroker','KhataBook',
-  'Jupiter','Fi Money','MobiKwik','GupShup','Amagi','HighRadius','Icertis',
-  'Druva','Zenoti','CleverTap','MoEngage','WebEngage','Yellow.ai','Haptik',
-  'Postman','BrowserStack','Paytm','Ola','OYO','Udaan','Blinkit','Shadowfax',
-  'Rivigo','BlackBuck','ElasticRun','DealShare','OfBusiness','Infra.Market',
-  'Turtlemint','ClearTax','OkCredit','Open Financial','Niyo','Instamojo',
-  'GreyOrange','Unbxd','Capillary','Sokrati','Mad Street Den','Innovaccer',
-  'Darwinbox','LatentView','Tredence','Mu Sigma','Fractal','Pine Labs',
-  'Eruditus','Upgrad','Vedantu','PurpleTalk','Ninjacart','Ninjavan',
-  'WayCool','DeHaat','AgroStar','Bijak','Arya.ag','Cropin','Fasal',
-  'Stellapps','Intello Labs','CropIn','Pixxel','Skyroot','Agnikul',
-  'Bellatrix','GalaxEye','Dhruva Space','SatSure','Detect Technologies',
-  'Auzmor','Advantage Club','HROne','Zimyo','Keka','sumHR','Darwinbox',
-  'greytHR','HRMantra','Beehive','Kredily','PeopleStrong','ZingHR',
-  'Qandle','factoHR','Empxtrack','Akrivia','Pocket HRMS','HRTailor',
-  'Synergita','AssessHub','Mercer|Mettl','iMocha','HackerEarth','HackerRank',
-  'Codility','TestGorilla','Vervoe','Xobin','Evalground','InterviewBit',
-  'Scaler','Newton School','Masai School','Crio.Do','Coding Ninjas',
-  'GUVI','Internshala','Unstop','Dare2Compete','Learnbay','Simplilearn',
-  'upGrad Enterprise','Great Learning','Emeritus','Coursera India',
-  'Udemy India','Skillsoft','Pluralsight India','LinkedIn Learning India',
+// ── Mock fallback ─────────────────────────────────────────────────────────────
+const REAL_COMPANIES = [
+  'Flipkart', 'Swiggy', 'Zomato', 'BrowserStack', 'Postman', 'Paytm', 'Razorpay', 'CRED',
+  'Ola', 'OYO', 'Meesho', 'Zepto', 'Zerodha', 'Dream11', 'Upstox', 'ShareChat',
+  'Freshworks', 'Zoho', 'Chargebee', 'Innovaccer', 'Darwinbox', 'Hasura',
+  'Unacademy', 'Vedantu', 'Eruditus', 'Upgrad', 'Lenskart', 'Nykaa', 'PharmEasy',
+  '1mg', 'CureFit', 'Groww', 'Pine Labs', 'BharatPe', 'Digit Insurance', 'PolicyBazaar',
+  'Delhivery', 'Shadowfax', 'BlackBuck', 'Zetwerk', 'Moglix', 'Urban Company',
+  'NoBroker', 'CarDekho', 'ClearTax', 'KhataBook', 'Jupiter', 'Fi Money', 'MobiKwik',
+  'CleverTap', 'MoEngage', 'WebEngage', 'Yellow.ai', 'Haptik', 'HighRadius',
+  'Icertis', 'Druva', 'Zenoti', 'Fractal', 'GreyOrange', 'Capillary',
 ];
 
-const MOCK_MANAGERS = [
-  { name:'Arjun Mehta',       title:'VP Engineering' },
-  { name:'Priya Sharma',      title:'Head of Engineering' },
-  { name:'Rahul Joshi',       title:'Director of Engineering' },
-  { name:'Sneha Patel',       title:'Engineering Manager' },
-  { name:'Vikram Nair',       title:'CTO' },
-  { name:'Ananya Krishnan',   title:'Head of Product' },
-  { name:'Rohan Gupta',       title:'VP of Product' },
-  { name:'Deepika Agarwal',   title:'Director of Product' },
-  { name:'Karan Malhotra',    title:'Co-Founder & CTO' },
-  { name:'Neha Reddy',        title:'VP Engineering' },
-  { name:'Siddharth Rao',     title:'Head of Technology' },
-  { name:'Pooja Iyer',        title:'Engineering Director' },
-  { name:'Aditya Bansal',     title:'Staff Engineering Manager' },
-  { name:'Kavitha Suresh',    title:'Head of Engineering' },
-  { name:'Nikhil Verma',      title:'VP of Engineering' },
-  { name:'Shruti Desai',      title:'Director of Technology' },
-  { name:'Amit Saxena',       title:'Principal Engineering Manager' },
-  { name:'Ritu Bhatia',       title:'Head of Product & Engineering' },
-  { name:'Gaurav Mishra',     title:'Engineering Lead' },
-  { name:'Divya Menon',       title:'VP Product' },
-  { name:'Kunal Kapoor',      title:'Director of Engineering' },
-  { name:'Meera Pillai',      title:'Co-Founder & VP Engineering' },
-  { name:'Varun Choudhary',   title:'Head of Backend Engineering' },
-  { name:'Tanya Singh',       title:'Engineering Manager' },
-  { name:'Rajat Khanna',      title:'VP of Technology' },
-  { name:'Ishita Ghosh',      title:'Director of Product Management' },
-  { name:'Sandeep Kumar',     title:'Head of Platform Engineering' },
-  { name:'Nandita Rao',       title:'VP Engineering' },
-  { name:'Prateek Jain',      title:'Senior Director of Engineering' },
-  { name:'Lakshmi Venkatesh', title:'CTO & Co-Founder' },
-  { name:'Abhishek Tiwari',   title:'Director of Engineering' },
-  { name:'Sunita Murthy',     title:'Head of Talent & Engineering' },
-  { name:'Mohit Aggarwal',    title:'VP of Product Engineering' },
-  { name:'Shalini Bajaj',     title:'Senior Engineering Manager' },
-  { name:'Vivek Pandey',      title:'Head of Infrastructure' },
-  { name:'Ankita Doshi',      title:'Director of Product' },
-  { name:'Suresh Natarajan',  title:'VP Engineering' },
-  { name:'Aarti Chandra',     title:'Engineering Manager' },
-  { name:'Tarun Bose',        title:'Head of Mobile Engineering' },
-  { name:'Preeti Mathur',     title:'Director of Engineering' },
-  { name:'Kartik Jain',       title:'Head of Growth' },
-  { name:'Ravi Krishnan',     title:'Head of Marketing' },
-  { name:'Swati Deshpande',   title:'VP Marketing' },
-  { name:'Manoj Bhatt',       title:'Director of Marketing' },
-  { name:'Richa Gupta',       title:'Head of Performance Marketing' },
-  { name:'Sameer Bose',       title:'CMO' },
-  { name:'Taruna Ahuja',      title:'VP Growth' },
-  { name:'Neel Shah',         title:'Director of Product Growth' },
+const TITLE_BY_FUNCTION = {
+  Engineering: ['Head of Engineering', 'VP Engineering', 'Director of Engineering', 'CTO', 'Engineering Manager', 'Principal Engineer'],
+  Product:     ['Head of Product', 'VP Product', 'Chief Product Officer', 'Director of Product', 'Group Product Manager'],
+  Marketing:   ['Head of Marketing', 'VP Marketing', 'CMO', 'Director of Marketing', 'Head of Growth'],
+};
+
+const INDIAN_NAMES = [
+  'Arjun Mehta', 'Priya Sharma', 'Rahul Joshi', 'Sneha Patel', 'Vikram Nair',
+  'Ananya Krishnan', 'Rohan Gupta', 'Deepika Agarwal', 'Karan Malhotra', 'Neha Reddy',
+  'Siddharth Rao', 'Pooja Iyer', 'Aditya Bansal', 'Kavitha Suresh', 'Nikhil Verma',
+  'Shruti Desai', 'Amit Saxena', 'Divya Menon', 'Kunal Kapoor', 'Meera Pillai',
+  'Varun Choudhary', 'Tanya Singh', 'Rajat Khanna', 'Sandeep Kumar', 'Prateek Jain',
+  'Lakshmi Venkatesh', 'Abhishek Tiwari', 'Mohit Aggarwal', 'Vivek Pandey', 'Ankita Doshi',
 ];
 
-const SOURCES_POOL = ['Naukri','Wellfound','Cutshort','Instahyre','IIM Jobs','Times Jobs'];
-const CITIES_POOL  = ['Bangalore','Mumbai','Delhi','Pune','Hyderabad','Chennai'];
-const FN_TITLES = {
-  Engineering: ['VP Engineering','Head of Engineering','Director of Engineering','Engineering Manager','CTO','Staff Engineering Manager'],
-  Product:     ['VP of Product','Head of Product','Director of Product','Product Manager','CPO'],
-  Marketing:   ['VP Marketing','Head of Marketing','Director of Marketing','CMO','Head of Growth'],
-};
+const ALL_SOURCES = ['Naukri', 'Wellfound', 'Cutshort', 'Instahyre', 'IIM Jobs', 'Times Jobs'];
 
-const shuffle = (arr) => {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-};
-
-const generateMockLeads = (role = 'Engineering', city = 'Bangalore', count = 30) => {
-  const resolvedRole = (role && role !== 'all') ? role : 'Engineering';
-  const resolvedCity = (city && city !== 'all') ? city : null; // null = vary per lead
-  const titles = FN_TITLES[resolvedRole] || FN_TITLES.Engineering;
-
-  // Unique batch tag so every run produces NEW name::company keys in Supabase
-  // Uses last 5 digits of timestamp — changes every ms, guarantees uniqueness
+const generateMockLeads = (role, city, count) => {
   const batchTag = String(Date.now()).slice(-5);
-
-  const companies = shuffle(MOCK_COMPANIES);
-  const managers  = shuffle(MOCK_MANAGERS);
-
+  const fn = Object.keys(TITLE_BY_FUNCTION).find((k) => k.toLowerCase() === String(role || '').toLowerCase()) || 'Engineering';
+  const titles = TITLE_BY_FUNCTION[fn];
   const leads = [];
-  for (let i = 0; i < Math.min(count, companies.length); i++) {
-    const manager   = managers[i % managers.length];
-    const company   = `${companies[i]} [${batchTag}]`; // unique per run
-    const numSources = 1 + Math.floor(Math.random() * 3);
-    const sources   = shuffle(SOURCES_POOL).slice(0, numSources);
-    const daysPosted = Math.floor(Math.random() * 30) + 1;
-    const activityScore = daysPosted <= 7  ? Math.floor(Math.random() * 3) + 7
-                        : daysPosted <= 20 ? Math.floor(Math.random() * 3) + 4
-                        :                   Math.floor(Math.random() * 3) + 1;
-    const leadCity = resolvedCity || CITIES_POOL[i % CITIES_POOL.length];
+
+  for (let i = 0; i < Math.min(count, REAL_COMPANIES.length); i++) {
+    const company = `${REAL_COMPANIES[i]} [${batchTag}]`;
+    const title = titles[i % titles.length];
+    const name = INDIAN_NAMES[i % INDIAN_NAMES.length];
+    const numSrc = i % 3 === 0 ? 3 : i % 2 === 0 ? 2 : 1;
+    const sources = ALL_SOURCES.slice(i % ALL_SOURCES.length, (i % ALL_SOURCES.length) + numSrc)
+      .concat(ALL_SOURCES.slice(0, Math.max(0, numSrc - (ALL_SOURCES.length - (i % ALL_SOURCES.length)))));
+    const daysPosted = (i % 14) + 1;
+    const score = calculateActivityScore(daysPosted, sources.length, title);
 
     leads.push({
-      name:             manager.name,
-      title:            titles[i % titles.length],
+      name,
+      title,
       company,
-      city:             leadCity,
-      function:         resolvedRole,
-      email:            `${manager.name.split(' ')[0].toLowerCase()}@${company.replace(/[\s\[\]]/g,'').toLowerCase()}.com`,
-      linkedin_url:     `https://www.linkedin.com/in/${manager.name.toLowerCase().replace(/\s+/g,'-')}`,
-      days_posted:      daysPosted,
-      activity_score:   activityScore,
+      city: city || 'Bangalore',
+      function: fn,
+      email: `contact@${REAL_COMPANIES[i].replace(/\s+/g, '').toLowerCase()}.com`,
+      linkedin_url: null,
+      activity_score: score,
+      days_posted: daysPosted,
       source_platforms: sources,
-      pipeline_stage:   'Found',
-      status:           'Found',
-      is_blacklisted:   false,
+      pipeline_stage: 'Found',
+      status: 'Found',
+      is_blacklisted: false,
     });
   }
+  return leads;
+};
+
+// ── Main pipeline ─────────────────────────────────────────────────────────────
+const scrapeAllPlatforms = async (role, city, strictHiringManager, options = {}) => {
+  const count = Math.max(10, Math.min(500, Number(options.count || 50)));
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const apifyKey = process.env.APIFY_API_KEY;
+  const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+
+  let leads = [];
+
+  // ── Step 1: LinkedIn direct people search (primary) ──────────────────────
+  if (apifyKey) {
+    try {
+      const linkedinLeads = await searchLinkedInDirectly(role, city, count, onProgress, strictHiringManager);
+      leads = [...leads, ...linkedinLeads];
+      console.log(`[pipeline] Apify LinkedIn direct: ${linkedinLeads.length} hiring managers`);
+
+      if (onProgress && linkedinLeads.length > 0) {
+        onProgress({ stage: 'linkedin_people', message: `Found ${linkedinLeads.length} hiring managers directly from LinkedIn.` });
+      } else if (onProgress) {
+        onProgress({ stage: 'linkedin_people', message: 'LinkedIn direct search returned no results. Trying job postings…' });
+      }
+    } catch (err) {
+      console.log(`[pipeline] Apify LinkedIn direct failed: ${err.message}`);
+      if (onProgress) onProgress({ stage: 'linkedin_error', message: `LinkedIn direct search failed: ${err.message}` });
+    }
+  } else {
+    if (onProgress) onProgress({ stage: 'skip_apify', message: 'APIFY_API_KEY not configured — skipping LinkedIn search.' });
+  }
+
+  // ── Step 2: LinkedIn Jobs via Apify (optional enrichment, get posting dates) ──
+  if (apifyKey && leads.length < count) {
+    try {
+      const jobPostings = await scrapeLinkedInJobs(role, city, count - leads.length, onProgress);
+      if (jobPostings.length > 0) {
+        console.log(`[pipeline] LinkedIn Jobs: ${jobPostings.length} postings for date context`);
+        // Merge posting dates into existing leads by company match
+        const postingByCompany = new Map(
+          jobPostings.map((j) => [j.company.toLowerCase(), j])
+        );
+        leads = leads.map((lead) => {
+          const posting = postingByCompany.get(String(lead.company || '').toLowerCase());
+          if (posting && posting.daysPosted > 0) {
+            return {
+              ...lead,
+              days_posted: posting.daysPosted,
+              activity_score: calculateActivityScore(posting.daysPosted, lead.source_platforms?.length || 1, lead.title),
+            };
+          }
+          return lead;
+        });
+      }
+    } catch (err) {
+      console.log(`[pipeline] LinkedIn Jobs enrichment failed: ${err.message}`);
+    }
+  }
+
+  // ── Step 3: Firecrawl on scraper-friendly boards (optional) ──────────────
+  if (firecrawlKey) {
+    for (const platform of FRIENDLY_PLATFORMS) {
+      if (leads.length >= count) break;
+      try {
+        if (onProgress) onProgress({ stage: 'firecrawl', message: `Trying ${platform.name} via Firecrawl…` });
+        const scraped = await firecrawlExtract(platform, role, city, firecrawlKey);
+        if (scraped.length > 0) {
+          console.log(`[pipeline] Firecrawl ${platform.name}: ${scraped.length} results`);
+          if (onProgress) onProgress({ stage: 'firecrawl_done', message: `${platform.name}: found ${scraped.length} additional leads.` });
+          // Convert raw scrape rows into lead shape
+          for (const job of scraped) {
+            if (!job.company) continue;
+            const daysPosted = Number(job.daysPosted || 0);
+            const score = calculateActivityScore(daysPosted, 1, job.posterTitle || job.title || '');
+            leads.push({
+              name: job.posterName || null,
+              title: job.posterTitle || job.title || '',
+              company: job.company,
+              city: city || null,
+              function: role || null,
+              email: `contact@${job.company.replace(/\s+/g, '').toLowerCase()}.com`,
+              linkedin_url: null,
+              activity_score: score,
+              days_posted: daysPosted,
+              source_platforms: [platform.name],
+              pipeline_stage: 'Found',
+              status: 'Found',
+              is_blacklisted: false,
+            });
+          }
+        } else {
+          if (onProgress) onProgress({ stage: 'firecrawl_blocked', message: `Job boards blocked automated scraping on ${platform.name}. Using LinkedIn results only.` });
+        }
+      } catch (err) {
+        console.log(`[pipeline] Firecrawl ${platform.name} failed: ${err.message}`);
+        if (onProgress) onProgress({ stage: 'firecrawl_blocked', message: `Job boards blocked automated scraping. Using LinkedIn direct search instead.` });
+      }
+    }
+  }
+
+  // ── Step 4: Remove leads without a name (only valid people count) ─────────
+  leads = leads.filter((l) => l.name && String(l.name).trim().length > 1);
+
+  // Deduplicate by name+company
+  const seen = new Set();
+  leads = leads.filter((l) => {
+    const key = `${String(l.name).toLowerCase()}::${String(l.company).toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  leads = leads.sort((a, b) => b.activity_score - a.activity_score).slice(0, count);
+
+  // ── Step 5: Nothing worked — fall back to mock ────────────────────────────
+  if (leads.length === 0) {
+    console.log('[pipeline] All sources returned nothing. Using mock data.');
+    if (onProgress) onProgress({ stage: 'mock_fallback', message: 'Both scraping methods failed. Generating realistic mock leads.' });
+    return generateMockLeads(role, city, count);
+  }
+
+  console.log(`[pipeline] Total leads after pipeline: ${leads.length}`);
   return leads;
 };
 

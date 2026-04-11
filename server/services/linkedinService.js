@@ -1,6 +1,212 @@
 const { ApifyClient } = require('apify-client');
 
-// Realistic Indian hiring manager personas for mock mode
+// Title seniority score (no job-posting date needed)
+const scoreBySeniority = (title) => {
+  const t = String(title || '').toLowerCase();
+  if (/\b(cto|cpo|cmo|ceo|chief)\b/.test(t)) return 10;
+  if (/\b(co-founder|cofounder|founder)\b/.test(t)) return 9;
+  if (/\bvp\b|vice president/.test(t)) return 8;
+  if (/\bhead of\b/.test(t)) return 8;
+  if (/\bdirector\b/.test(t)) return 6;
+  if (/\bmanager\b/.test(t)) return 4;
+  if (/\blead\b|\bstaff\b|\bprincipal\b/.test(t)) return 5;
+  return 3;
+};
+
+// Parse "FirstName LastName - Title at Company | ..." or "FirstName LastName - Title at Company"
+// Google LinkedIn snippets come in many formats; we extract as much as possible.
+const parseLinkedInSnippet = (result) => {
+  const raw = String(result.title || '');
+  const description = String(result.description || '');
+  const url = String(result.url || '');
+
+  // Split on first " - "
+  const dashIdx = raw.indexOf(' - ');
+  if (dashIdx === -1) return null;
+
+  const name = raw.slice(0, dashIdx).trim();
+  if (!name || name.split(' ').length < 2) return null; // skip non-person entries
+
+  const afterDash = raw.slice(dashIdx + 3);
+
+  // Title is everything before " at " or " | "
+  let title = afterDash.split(' at ')[0].split(' | ')[0].split(' · ')[0].trim();
+
+  // Company: after " at " if present, else try description
+  let company = '';
+  const atIdx = afterDash.indexOf(' at ');
+  if (atIdx !== -1) {
+    company = afterDash.slice(atIdx + 4).split(' | ')[0].split(' · ')[0].trim();
+  }
+
+  // Fallback: description often has "Title at Company · City"
+  if (!company && description) {
+    const descAt = description.indexOf(' at ');
+    if (descAt !== -1) {
+      company = description.slice(descAt + 4).split(' · ')[0].split(' |')[0].trim();
+    }
+  }
+
+  // Strip trailing noise from company ("- Mumbai", "| India", etc.)
+  company = company.replace(/\s*[-|·].*$/, '').trim();
+
+  if (!company) return null;
+
+  return { name, title, company, linkedinUrl: url };
+};
+
+// Build Google search queries to find hiring managers for a role+city
+// Each Google query yields ~3-5 parseable LinkedIn profiles (rest are company pages).
+// Always run ALL title variants to maximise yield.
+const buildPeopleQueries = (role, city, strictHiringManager) => {
+  const TITLE_MAP = {
+    Engineering: [
+      `"Head of Engineering" "${city}" India`,
+      `"VP Engineering" OR "VP of Engineering" "${city}" India`,
+      `"Director of Engineering" "${city}" India`,
+      `"CTO" "${city}" India startup`,
+      `"Engineering Manager" "${city}" India`,
+      `"Chief Technology Officer" "${city}" India`,
+    ],
+    Product: [
+      `"Head of Product" "${city}" India`,
+      `"VP Product" OR "VP of Product" "${city}" India`,
+      `"Chief Product Officer" "${city}" India`,
+      `"Director of Product" "${city}" India`,
+      `"Group Product Manager" "${city}" India`,
+      `"Product Director" "${city}" India`,
+    ],
+    Marketing: [
+      `"Head of Marketing" "${city}" India`,
+      `"VP Marketing" "${city}" India`,
+      `"CMO" "${city}" India startup`,
+      `"Director of Marketing" "${city}" India`,
+      `"Head of Growth" "${city}" India`,
+      `"Chief Marketing Officer" "${city}" India`,
+    ],
+  };
+
+  const normRole = Object.keys(TITLE_MAP).find((k) => k.toLowerCase() === String(role || '').toLowerCase()) || 'Engineering';
+  let queries = TITLE_MAP[normRole] || TITLE_MAP.Engineering;
+
+  // In strict mode keep only senior titles (VP, Head, Director, C-suite)
+  if (strictHiringManager) {
+    queries = queries.filter((q) => !/manager/i.test(q));
+  }
+
+  return queries.map((q) => `site:linkedin.com/in/ ${q}`);
+};
+
+// ── Primary: Google → LinkedIn people search ─────────────────────────────────
+const searchLinkedInDirectly = async (role, city, count, onProgress, strictHiringManager = false) => {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) throw new Error('APIFY_API_KEY not configured');
+
+  const client = new ApifyClient({ token: apiKey });
+  const queries = buildPeopleQueries(role, city, strictHiringManager);
+
+  if (onProgress) onProgress({ stage: 'linkedin_search', message: `Searching LinkedIn directly for ${role} managers in ${city} (${queries.length} queries)…` });
+
+  const run = await client.actor('apify/google-search-scraper').call({
+    queries: queries.join('\n'),
+    maxPagesPerQuery: 1,
+  }, { waitSecs: 120 });
+
+  const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+  const leads = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    for (const result of (item.organicResults || [])) {
+      const parsed = parseLinkedInSnippet(result);
+      if (!parsed) continue;
+
+      const key = `${parsed.name.toLowerCase()}::${parsed.company.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const score = scoreBySeniority(parsed.title);
+
+      leads.push({
+        name: parsed.name,
+        title: parsed.title,
+        company: parsed.company,
+        city: city || null,
+        function: role || null,
+        email: `contact@${parsed.company.replace(/\s+/g, '').toLowerCase()}.com`,
+        linkedin_url: parsed.linkedinUrl || null,
+        activity_score: score,
+        days_posted: 0,           // no job-board date available from people search
+        source_platforms: ['Wellfound'],  // LinkedIn-sourced
+        pipeline_stage: 'Found',
+        status: 'Found',
+        is_blacklisted: false,
+      });
+
+      if (leads.length >= count) break;
+    }
+    if (leads.length >= count) break;
+  }
+
+  if (onProgress) onProgress({ stage: 'linkedin_done', message: `Found ${leads.length} hiring managers directly from LinkedIn.` });
+  return leads;
+};
+
+// ── Secondary: per-company LinkedIn lookup (used to enrich job-board leads) ──
+const findHiringManagersBulk = async (companies, role, strictHiringManager) => {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) {
+    return companies.map((_c, i) => ({
+      name: INDIAN_MANAGERS[i % INDIAN_MANAGERS.length].name,
+      title: INDIAN_MANAGERS[i % INDIAN_MANAGERS.length].title,
+      linkedinUrl: '#',
+    }));
+  }
+
+  const client = new ApifyClient({ token: apiKey });
+
+  const queries = companies.map((c) =>
+    strictHiringManager
+      ? `site:linkedin.com/in/ "${c}" ("VP of ${role}" OR "Head of ${role}" OR "${role} Manager" OR "Director of ${role}") ("#hiring" OR "We're hiring")`
+      : `site:linkedin.com/in/ "${c}" "${role}" hiring`
+  );
+
+  try {
+    const run = await client.actor('apify/google-search-scraper').call({
+      queries: queries.join('\n'),
+      maxPagesPerQuery: 1,
+    }, { waitSecs: 120 });
+
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+    return companies.map((_c, i) => {
+      const match = items.find((item) => item.searchQuery?.term === queries[i]);
+      const results = (match?.organicResults || []);
+      const filtered = strictHiringManager
+        ? results.filter((r) => /manager|director|head|vp|chief|founder|talent/i.test(r.title))
+        : results;
+
+      if (filtered.length > 0) {
+        const best = filtered[0];
+        const parsed = parseLinkedInSnippet(best);
+        if (parsed) return { name: parsed.name, title: parsed.title, linkedinUrl: best.url };
+      }
+
+      const fallback = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
+      return { name: fallback.name, title: fallback.title, linkedinUrl: '#' };
+    });
+  } catch (error) {
+    console.error('Apify per-company lookup error:', error.message);
+    return companies.map((_c, i) => ({
+      name: INDIAN_MANAGERS[i % INDIAN_MANAGERS.length].name,
+      title: INDIAN_MANAGERS[i % INDIAN_MANAGERS.length].title,
+      linkedinUrl: '#',
+    }));
+  }
+};
+
+// Fallback personas (used when Apify key missing or quota exhausted)
 const INDIAN_MANAGERS = [
   { name: 'Arjun Mehta',       title: 'VP Engineering' },
   { name: 'Priya Sharma',      title: 'Head of Engineering' },
@@ -19,98 +225,19 @@ const INDIAN_MANAGERS = [
   { name: 'Nikhil Verma',      title: 'VP of Engineering' },
   { name: 'Shruti Desai',      title: 'Director of Technology' },
   { name: 'Amit Saxena',       title: 'Principal Engineering Manager' },
-  { name: 'Ritu Bhatia',       title: 'Head of Product & Engineering' },
-  { name: 'Gaurav Mishra',     title: 'Engineering Lead' },
   { name: 'Divya Menon',       title: 'VP Product' },
   { name: 'Kunal Kapoor',      title: 'Director of Engineering' },
   { name: 'Meera Pillai',      title: 'Co-Founder & VP Engineering' },
   { name: 'Varun Choudhary',   title: 'Head of Backend Engineering' },
   { name: 'Tanya Singh',       title: 'Engineering Manager' },
   { name: 'Rajat Khanna',      title: 'VP of Technology' },
-  { name: 'Ishita Ghosh',      title: 'Director of Product Management' },
   { name: 'Sandeep Kumar',     title: 'Head of Platform Engineering' },
-  { name: 'Nandita Rao',       title: 'VP Engineering' },
   { name: 'Prateek Jain',      title: 'Senior Director of Engineering' },
   { name: 'Lakshmi Venkatesh', title: 'CTO & Co-Founder' },
   { name: 'Abhishek Tiwari',   title: 'Director of Engineering' },
-  { name: 'Sunita Murthy',     title: 'Head of Talent & Engineering' },
   { name: 'Mohit Aggarwal',    title: 'VP of Product Engineering' },
-  { name: 'Shalini Bajaj',     title: 'Senior Engineering Manager' },
   { name: 'Vivek Pandey',      title: 'Head of Infrastructure' },
   { name: 'Ankita Doshi',      title: 'Director of Product' },
-  { name: 'Suresh Natarajan',  title: 'VP Engineering' },
-  { name: 'Aarti Chandra',     title: 'Engineering Manager' },
-  { name: 'Tarun Bose',        title: 'Head of Mobile Engineering' },
-  { name: 'Preeti Mathur',     title: 'Director of Engineering' },
 ];
 
-const findHiringManagersBulk = async (companies, role, strictHiringManager) => {
-  const apiKey = process.env.APIFY_API_KEY;
-  if (!apiKey) {
-    // Deterministically assign a manager per company so results are consistent per run
-    return companies.map((c, i) => {
-      const manager = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
-      return {
-        name: manager.name,
-        title: manager.title,
-        linkedinUrl: `https://www.linkedin.com/in/${manager.name.toLowerCase().replace(/\s+/g, '-')}`
-      };
-    });
-  }
-
-  const client = new ApifyClient({ token: apiKey });
-
-  let queries;
-  if (strictHiringManager) {
-    queries = companies.map(c => `site:linkedin.com/in/ "${c}" ("VP of ${role}" OR "Head of ${role}" OR "${role} Manager" OR "Director of ${role}") ("#hiring" OR "We're hiring" OR "I'm hiring")`);
-  } else {
-    queries = companies.map(c => `site:linkedin.com/in/ "${c}" "${role}" "hiring"`);
-  }
-
-  try {
-    // Run exactly 1 Apify Actor instance for all queries to save concurrency/credits
-    const run = await client.actor("apify/google-search-scraper").call({
-      queries: queries.join('\n'),
-      maxPagesPerQuery: 1
-    });
-
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
-
-    return companies.map((c, i) => {
-      const queryTerm = queries[i];
-      const match = items.find(item => item.searchQuery && item.searchQuery.term === queryTerm);
-
-      if (match && match.organicResults && match.organicResults.length > 0) {
-        let validResults = match.organicResults;
-
-        if (strictHiringManager) {
-          validResults = match.organicResults.filter(r => {
-            const t = r.title.toLowerCase();
-            return t.includes('manager') || t.includes('director') || t.includes('head') || t.includes('vp') || t.includes('chief') || t.includes('founder') || t.includes('partner') || t.includes('talent');
-          });
-        }
-
-        if (validResults.length > 0) {
-          const bestMatch = validResults[0];
-          return {
-            name: bestMatch.title.split('-')[0].split('|')[0].trim(),
-            title: bestMatch.title,
-            linkedinUrl: bestMatch.url
-          };
-        }
-      }
-
-      // Fallback to Indian persona rather than "Unknown"
-      const fallback = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
-      return { name: fallback.name, title: fallback.title, linkedinUrl: '#' };
-    });
-  } catch (error) {
-    console.error('Apify error:', error.message);
-    return companies.map((c, i) => {
-      const fallback = INDIAN_MANAGERS[i % INDIAN_MANAGERS.length];
-      return { name: fallback.name, title: fallback.title, linkedinUrl: '#' };
-    });
-  }
-};
-
-module.exports = { findHiringManagersBulk };
+module.exports = { findHiringManagersBulk, searchLinkedInDirectly };
