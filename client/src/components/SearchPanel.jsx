@@ -22,8 +22,9 @@ const SearchPanel = ({
   onFilterChange,
   apiStatus,
 }) => {
-  const internetEnabled = !apiStatus || apiStatus.firecrawl === 'ready';
-  const internetTitle = internetEnabled ? undefined : 'Add FIRECRAWL_API_KEY to enable internet scraping';
+  // Internet search is Apify-first — enable when Apify key is configured (Firecrawl is optional)
+  const internetEnabled = !apiStatus || apiStatus.apify === 'ready';
+  const internetTitle = internetEnabled ? undefined : 'Add APIFY_API_KEY to enable LinkedIn search';
   const [role, setRole] = useState('all');
   const [city, setCity] = useState('all');
   const [strictHiringManager, setStrictHiringManager] = useState(false);
@@ -272,7 +273,7 @@ const SearchPanel = ({
             className="btn-secondary"
             onClick={() => setManualOpen(true)}
             disabled={loading || !internetEnabled}
-            title={internetEnabled ? undefined : 'Add FIRECRAWL_API_KEY to enable manual pull'}
+            title={internetEnabled ? undefined : 'Add APIFY_API_KEY to enable manual pull'}
           >
             ⬇ Manual Pull
           </button>

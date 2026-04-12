@@ -43,6 +43,7 @@ const Dashboard = ({
   totalLeads,
   selectedCount,
   emailedCount,
+  averageScore: apiAverageScore,
   leadCountLabel,
   currentFilters,
   onSearchDatabase,
@@ -171,7 +172,7 @@ const Dashboard = ({
         </div>
         <div className="stat-card sw">
           <div className="stat-label">Average Score</div>
-          <div className="stat-num">{avgScore || '—'}</div>
+          <div className="stat-num">{apiAverageScore || avgScore || '—'}</div>
           <div className="stat-hint">activity / 10</div>
         </div>
         <div className="stat-card se">

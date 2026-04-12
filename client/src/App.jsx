@@ -530,6 +530,7 @@ function App() {
               totalLeads={isDemoMode ? MOCK_STATS.totalLeads : Number(stats?.totalLeads || 0)}
               selectedCount={isDemoMode ? MOCK_STATS.selected : Number(stats?.selected || 0)}
               emailedCount={isDemoMode ? MOCK_STATS.emailed : Number(stats?.emailed || 0)}
+              averageScore={isDemoMode ? MOCK_STATS.averageScore : Number(stats?.averageScore || 0)}
               leadCountLabel={leadCountLabel}
               currentFilters={currentFilters}
               onSearchDatabase={searchDatabase}

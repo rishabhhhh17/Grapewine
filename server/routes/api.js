@@ -695,8 +695,8 @@ const runInternetPipeline = async ({
   let status = 'success';
   let errorMessage = null;
 
-  // No Firecrawl key → fast mock path: skip scrape + Apify entirely
-  if (!process.env.FIRECRAWL_API_KEY) {
+  // No real API keys → fast mock path: skip all external calls
+  if (!process.env.APIFY_API_KEY && !process.env.FIRECRAWL_API_KEY) {
     try {
       if (onProgress) onProgress({ stage: 'mock', message: `Mock mode — generating ${count} test leads...` });
       const prepared = generateMockLeads(role, city, count);
@@ -719,11 +719,17 @@ const runInternetPipeline = async ({
     }
   }
 
-  let rawJobs = [];
+  // Real pipeline: scrapeAllPlatforms returns fully-formed lead objects (name/title/company/score)
+  // from Apify LinkedIn direct search + optional Firecrawl. Use them directly — no second Apify
+  // enrichment pass needed.
+  let scrapedLeads = [];
   try {
-    rawJobs = await scrapeAllPlatforms(role, city, strictHiringManager, { sources, count, onProgress });
-    const prepared = await buildLeadsFromJobs({ rawJobs, role, city, strictHiringManager, onProgress });
-    if (onProgress) onProgress({ stage: 'saving', message: 'Saving leads to Supabase...' });
+    if (onProgress) onProgress({ stage: 'searching', message: `Searching LinkedIn for ${role || 'hiring'} managers in ${city || 'India'}…` });
+    scrapedLeads = await scrapeAllPlatforms(role, city, strictHiringManager, { sources, count, onProgress });
+
+    const prepared = scrapedLeads.filter((l) => l.name && l.company);
+    if (onProgress) onProgress({ stage: 'saving', message: `Saving ${prepared.length} leads to Supabase…` });
+
     const { added, updated } = await upsertLeads(prepared, {
       triggeredBy,
       sourcesScraped: sources,
@@ -732,6 +738,8 @@ const runInternetPipeline = async ({
       status,
       errorMessage,
     });
+
+    if (onProgress) onProgress({ stage: 'done', message: `Done. ${added} new leads added, ${updated} already existed and updated.` });
     return { added, updated, scrapedCount: prepared.length };
   } catch (error) {
     status = 'partial';
