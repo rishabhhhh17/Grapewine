@@ -297,7 +297,7 @@ const Dashboard = ({
                       <div className="lc-blurb">{blurb(lead)}</div>
                     </div>
                     <div className="lc-foot" onClick={(event) => event.stopPropagation()}>
-                      <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">View LinkedIn</a>
+                      <a href={lead.linkedin_url || `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.name} ${lead.company}`)}`} target="_blank" rel="noreferrer" className="btn-li">View LinkedIn</a>
                       <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={async () => { await selectLead(lead); }}>Email</button>
                       <button className="btn-ghost small" onClick={() => onBlacklist(lead.id)}>Blacklist</button>
                     </div>
@@ -346,7 +346,7 @@ const Dashboard = ({
                       })}
                     </div>
                     <div className="ll-col actions" onClick={(e) => e.stopPropagation()}>
-                      <a href={lead.linkedin_url || '#'} target="_blank" rel="noreferrer" className="btn-li">LinkedIn</a>
+                      <a href={lead.linkedin_url || `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.name} ${lead.company}`)}`} target="_blank" rel="noreferrer" className="btn-li">LinkedIn</a>
                       <button className={`btn-sel ${isSelected ? 'on' : ''}`} onClick={async () => { await selectLead(lead); }}>Email</button>
                     </div>
                   </div>
